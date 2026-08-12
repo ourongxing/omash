@@ -1,17 +1,32 @@
 use crate::app::{App, Tab};
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    layout::{Alignment, Constraint, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
-        Tabs, Wrap,
+        Block, Borders, Cell, Clear, List, ListItem, ListState, Padding, Paragraph, Row, Table,
+        TableState, Tabs, Wrap,
     },
 };
 
-const ACCENT: Color = Color::Rgb(120, 190, 255);
-const MUTED: Color = Color::Rgb(125, 135, 150);
+const ACCENT: Color = Color::Rgb(103, 210, 255);
+const MUTED: Color = Color::Rgb(118, 130, 151);
+const BORDER: Color = Color::Rgb(55, 66, 84);
+const SURFACE: Color = Color::Rgb(24, 29, 39);
+const SURFACE_ACTIVE: Color = Color::Rgb(35, 47, 63);
+const SUCCESS: Color = Color::Rgb(91, 214, 151);
+const WARNING: Color = Color::Rgb(245, 190, 90);
+const DANGER: Color = Color::Rgb(244, 112, 122);
+
+#[derive(Clone, Copy)]
+struct ShellAreas {
+    navigation: Rect,
+    header: Rect,
+    content: Rect,
+    status: Rect,
+    wide: bool,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HitTarget {
@@ -39,39 +54,80 @@ impl HitRegion {
 }
 
 pub fn draw(frame: &mut Frame, app: &App) -> Vec<HitRegion> {
-    let areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(4),
-            Constraint::Length(2),
-        ])
-        .split(frame.area());
-    draw_header(frame, app, areas[0]);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(Color::Rgb(14, 18, 25))),
+        frame.area(),
+    );
+    let shell = shell_areas(frame.area());
+    draw_navigation(frame, app, shell.navigation, shell.wide);
+    draw_page_header(frame, app, shell.header);
     match app.tab {
-        Tab::Dashboard => dashboard(frame, app, areas[1]),
-        Tab::Proxies => proxies(frame, app, areas[1]),
-        Tab::Profiles => profiles(frame, app, areas[1]),
-        Tab::Connections => connections(frame, app, areas[1]),
-        Tab::Rules => rules(frame, app, areas[1]),
-        Tab::Logs => logs(frame, app, areas[1]),
-        Tab::Unlock => unlock(frame, app, areas[1]),
-        Tab::Settings => settings(frame, app, areas[1]),
-        Tab::Help => help(frame, app, areas[1]),
+        Tab::Dashboard => dashboard(frame, app, shell.content),
+        Tab::Proxies => proxies(frame, app, shell.content),
+        Tab::Profiles => profiles(frame, app, shell.content),
+        Tab::Connections => connections(frame, app, shell.content),
+        Tab::Rules => rules(frame, app, shell.content),
+        Tab::Logs => logs(frame, app, shell.content),
+        Tab::Unlock => unlock(frame, app, shell.content),
+        Tab::Settings => settings(frame, app, shell.content),
+        Tab::Help => help(frame, app, shell.content),
     }
-    draw_status(frame, app, areas[2]);
+    draw_status(frame, app, shell.status);
+    if app.help_open {
+        draw_help_overlay(frame);
+    }
     if app.input.is_some() {
         draw_input(frame, app);
     }
-    hit_regions(app, areas[0], areas[1])
+    hit_regions(app, shell)
 }
 
-fn hit_regions(app: &App, header: Rect, content: Rect) -> Vec<HitRegion> {
-    let mut regions = tab_regions(header);
+fn shell_areas(area: Rect) -> ShellAreas {
+    let outer = area.inner(Margin::new(1, 0));
+    let rows = Layout::vertical([Constraint::Min(8), Constraint::Length(3)]).split(outer);
+    if area.width >= 88 && area.height >= 24 {
+        let columns = Layout::horizontal([
+            Constraint::Length(23),
+            Constraint::Length(2),
+            Constraint::Min(40),
+        ])
+        .split(rows[0]);
+        let main = Layout::vertical([
+            Constraint::Length(5),
+            Constraint::Length(1),
+            Constraint::Min(4),
+        ])
+        .split(columns[2]);
+        ShellAreas {
+            navigation: columns[0],
+            header: main[0],
+            content: main[2].inner(Margin::new(1, 0)),
+            status: rows[1],
+            wide: true,
+        }
+    } else {
+        let main = Layout::vertical([
+            Constraint::Length(4),
+            Constraint::Length(5),
+            Constraint::Length(1),
+            Constraint::Min(4),
+        ])
+        .split(rows[0]);
+        ShellAreas {
+            navigation: main[0],
+            header: main[1],
+            content: main[3].inner(Margin::new(1, 0)),
+            status: rows[1],
+            wide: false,
+        }
+    }
+}
+
+fn hit_regions(app: &App, shell: ShellAreas) -> Vec<HitRegion> {
+    let mut regions = tab_regions(shell.navigation, shell.wide);
     match app.tab {
         Tab::Dashboard => {
-            let rows = Layout::vertical([Constraint::Length(7), Constraint::Min(5)]).split(content);
-            let cards = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(rows[0]);
+            let cards = dashboard_card_areas(shell.content);
             regions.push(HitRegion {
                 area: cards[0],
                 target: HitTarget::CoreToggle,
@@ -82,9 +138,7 @@ fn hit_regions(app: &App, header: Rect, content: Rect) -> Vec<HitRegion> {
             });
         }
         Tab::Proxies => {
-            let columns =
-                Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-                    .split(content);
+            let columns = proxy_columns(shell.content);
             regions.extend(list_regions(
                 columns[0],
                 app.proxy_groups().len(),
@@ -101,28 +155,28 @@ fn hit_regions(app: &App, header: Rect, content: Rect) -> Vec<HitRegion> {
             ));
         }
         Tab::Profiles => regions.extend(list_regions(
-            content,
+            shell.content,
             app.profiles.items.len(),
             app.profile_index,
             true,
             HitTarget::Profile,
         )),
         Tab::Connections => regions.extend(list_regions(
-            content,
+            shell.content,
             app.snapshot.connections.connections.len(),
             app.connection_index,
             true,
             HitTarget::Connection,
         )),
         Tab::Rules => regions.extend(list_regions(
-            content,
+            shell.content,
             app.snapshot.rules.rules.len(),
             app.rule_index,
             true,
             HitTarget::Rule,
         )),
         Tab::Settings => regions.extend(list_regions(
-            content,
+            shell.content,
             crate::app::SETTINGS_COUNT,
             app.setting_index,
             false,
@@ -133,24 +187,43 @@ fn hit_regions(app: &App, header: Rect, content: Rect) -> Vec<HitRegion> {
     regions
 }
 
-fn tab_regions(area: Rect) -> Vec<HitRegion> {
-    let mut x = area.x.saturating_add(1);
-    Tab::ALL
-        .iter()
-        .copied()
-        .enumerate()
-        .filter_map(|(index, tab)| {
-            let width = format!(" {} {} ", index + 1, tab.title()).chars().count() as u16;
-            let available = area.right().saturating_sub(x);
-            let visible_width = width.min(available);
-            let region = (visible_width > 0).then_some(HitRegion {
-                area: Rect::new(x, area.y.saturating_add(1), visible_width, 1),
+fn tab_regions(area: Rect, wide: bool) -> Vec<HitRegion> {
+    if wide {
+        Tab::ALL
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, tab)| HitRegion {
+                area: Rect::new(
+                    area.x + 1,
+                    area.y + 5 + index as u16 * 2,
+                    area.width.saturating_sub(2),
+                    1,
+                ),
                 target: HitTarget::Tab(tab),
-            });
-            x = x.saturating_add(width).saturating_add(1);
-            region
-        })
-        .collect()
+            })
+            .collect()
+    } else {
+        let tabs = Rect::new(area.x, area.y + 2, area.width, 2);
+        let mut x = tabs.x.saturating_add(1);
+        Tab::ALL
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(index, tab)| {
+                let width = format!(" {} {} ", index + 1, short_title(tab))
+                    .chars()
+                    .count() as u16;
+                let visible = width.min(tabs.right().saturating_sub(x));
+                let region = (visible > 0).then_some(HitRegion {
+                    area: Rect::new(x, tabs.y, visible, 1),
+                    target: HitTarget::Tab(tab),
+                });
+                x = x.saturating_add(width).saturating_add(1);
+                region
+            })
+            .collect()
+    }
 }
 
 fn list_regions(
@@ -161,7 +234,7 @@ fn list_regions(
     target: fn(usize) -> HitTarget,
 ) -> Vec<HitRegion> {
     let inner = area.inner(Margin::new(1, 1));
-    let header_height = u16::from(has_header);
+    let header_height = if has_header { 2 } else { 0 };
     let capacity = inner.height.saturating_sub(header_height) as usize;
     if capacity == 0 || len == 0 {
         return Vec::new();
@@ -189,75 +262,228 @@ fn visible_start(selected: usize, len: usize, capacity: usize) -> usize {
     }
 }
 
-fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
-    let titles = Tab::ALL.iter().enumerate().map(|(index, tab)| {
-        Line::from(vec![Span::styled(
-            format!(" {} {} ", index + 1, tab.title()),
-            Style::default().fg(Color::White),
-        )])
-    });
+fn draw_navigation(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
     let selected = Tab::ALL.iter().position(|tab| *tab == app.tab).unwrap_or(0);
-    let tabs = Tabs::new(titles)
-        .select(selected)
-        .highlight_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
-        .block(Block::default().borders(Borders::BOTTOM).title(" omash "));
-    frame.render_widget(tabs, area);
+    if !wide {
+        let areas = Layout::vertical([Constraint::Length(2), Constraint::Length(2)]).split(area);
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                " O M A S H ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .alignment(Alignment::Center),
+            areas[0],
+        );
+        let titles = Tab::ALL
+            .iter()
+            .enumerate()
+            .map(|(index, tab)| Line::from(format!(" {} {} ", index + 1, short_title(*tab))));
+        frame.render_widget(
+            Tabs::new(titles)
+                .select(selected)
+                .divider(" ")
+                .style(Style::default().fg(MUTED))
+                .highlight_style(
+                    Style::default()
+                        .fg(ACCENT)
+                        .bg(SURFACE_ACTIVE)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            areas[1],
+        );
+        return;
+    }
+
+    frame.render_widget(Block::default().style(Style::default().bg(SURFACE)), area);
+    let inner = area.inner(Margin::new(1, 1));
+    let brand = Rect::new(inner.x, inner.y, inner.width, 3);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![Span::styled(
+                "█▀█ █▄ ▄█ █▀█ █▀▀ █ █",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from(vec![Span::styled(
+                "█▄█ █ ▀ █ █▀█ ▄▄█ █▀█",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+        ])
+        .alignment(Alignment::Center),
+        brand,
+    );
+
+    for (index, tab) in Tab::ALL.iter().copied().enumerate() {
+        let active = tab == app.tab;
+        let row = Rect::new(
+            area.x + 1,
+            area.y + 5 + index as u16 * 2,
+            area.width.saturating_sub(2),
+            1,
+        );
+        let style = if active {
+            Style::default()
+                .fg(ACCENT)
+                .bg(SURFACE_ACTIVE)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(190, 199, 214))
+        };
+        let marker = if active { "›" } else { " " };
+        frame.render_widget(
+            Paragraph::new(format!("{marker} {}  {}", index + 1, tab.title())).style(style),
+            row,
+        );
+    }
+
+    if area.height >= 28 {
+        let state_area = Rect::new(
+            area.x + 2,
+            area.bottom() - 5,
+            area.width.saturating_sub(4),
+            3,
+        );
+        let (dot, label, color) = if app.online {
+            ("●", "CORE ONLINE", SUCCESS)
+        } else if app.supervisor.running {
+            ("◐", "CORE STARTING", WARNING)
+        } else {
+            ("●", "CORE OFFLINE", DANGER)
+        };
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(vec![Span::styled(
+                    format!("{dot} {label}"),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                )]),
+                Line::styled(
+                    format!("  {} mode", app.snapshot.config.mode),
+                    Style::default().fg(MUTED),
+                ),
+            ]),
+            state_area,
+        );
+    }
+}
+
+fn draw_page_header(frame: &mut Frame, app: &App, area: Rect) {
+    if area.height < 3 {
+        return;
+    }
+    let subtitle = match app.tab {
+        Tab::Dashboard => "Live overview of your local proxy service",
+        Tab::Proxies => "Choose routing groups and test node latency",
+        Tab::Profiles => "Manage local and remote configuration profiles",
+        Tab::Connections => "Inspect and close active network sessions",
+        Tab::Rules => "Review the policies currently loaded by Mihomo",
+        Tab::Logs => "Recent runtime output from the managed core",
+        Tab::Unlock => "Check regional availability for media and AI services",
+        Tab::Settings => "Core behavior, networking and application maintenance",
+        Tab::Help => "Keyboard and mouse shortcuts",
+    };
+    let area = area.inner(Margin::new(1, 0));
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(""),
+            Line::styled(
+                app.tab.title(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::styled(subtitle, Style::default().fg(MUTED)),
+        ])
+        .block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(BORDER)),
+        ),
+        area,
+    );
+}
+
+fn short_title(tab: Tab) -> &'static str {
+    match tab {
+        Tab::Dashboard => "Home",
+        Tab::Proxies => "Proxy",
+        Tab::Profiles => "Profiles",
+        Tab::Connections => "Conns",
+        Tab::Rules => "Rules",
+        Tab::Logs => "Logs",
+        Tab::Unlock => "Unlock",
+        Tab::Settings => "Settings",
+        Tab::Help => "Help",
+    }
 }
 
 fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(5)])
-        .split(area);
-    let cards = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Ratio(1, 4); 4])
-        .split(rows[0]);
+    let cards = dashboard_card_areas(area);
     card(
         frame,
         cards[0],
-        "STATUS",
+        "CORE STATUS",
         if app.online {
-            "● ONLINE"
+            "●  Online"
         } else if app.supervisor.running {
-            "● STARTING"
+            "◐  Starting"
         } else {
-            "● OFFLINE"
+            "●  Offline"
         },
-        if app.online { Color::Green } else { Color::Red },
+        if app.online { SUCCESS } else { DANGER },
     );
     card(
         frame,
         cards[1],
-        "MODE",
+        "ROUTING MODE",
         &app.snapshot.config.mode.to_uppercase(),
         ACCENT,
     );
     card(
         frame,
         cards[2],
-        "TRAFFIC",
-        &format!("↑ {}\n↓ {}", bytes(app.speeds.0), bytes(app.speeds.1)),
+        "LIVE TRAFFIC",
+        &format!("↑ {}   ↓ {}", bytes(app.speeds.0), bytes(app.speeds.1)),
         Color::Cyan,
     );
     card(
         frame,
         cards[3],
-        "CONNECTIONS",
+        "SESSIONS",
         &app.snapshot.connections.connections.len().to_string(),
-        Color::Yellow,
+        WARNING,
     );
 
+    let card_height = if area.width >= 72 { 6 } else { 11 };
+    let details_area = Rect::new(
+        area.x,
+        area.y.saturating_add(card_height),
+        area.width,
+        area.height.saturating_sub(card_height),
+    );
+    let details = if details_area.width >= 70 {
+        Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)])
+            .split(details_area)
+    } else {
+        Layout::horizontal([Constraint::Percentage(100), Constraint::Length(0)]).split(details_area)
+    };
     let info = vec![
         Line::from(vec![
-            Span::styled("Core       ", Style::default().fg(MUTED)),
-            Span::raw(value_or_dash(&app.snapshot.version.version)),
+            Span::styled("VERSION       ", Style::default().fg(MUTED)),
+            Span::styled(
+                value_or_dash(&app.snapshot.version.version),
+                Style::default().fg(Color::White),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("Supervisor ", Style::default().fg(MUTED)),
+            Span::styled("SUPERVISOR    ", Style::default().fg(MUTED)),
             Span::raw(if app.supervisor.running {
                 format!(
-                    "managed · pid {} · restarts {} · reloads {}",
+                    "Managed · PID {} · {} restarts · {} reloads",
                     app.supervisor
                         .pid
                         .map_or_else(|| "—".into(), |pid| pid.to_string()),
@@ -272,11 +498,11 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
             }),
         ]),
         Line::from(vec![
-            Span::styled("Controller ", Style::default().fg(MUTED)),
+            Span::styled("CONTROLLER    ", Style::default().fg(MUTED)),
             Span::raw(&app.config.controller),
         ]),
         Line::from(vec![
-            Span::styled("Mixed port ", Style::default().fg(MUTED)),
+            Span::styled("MIXED PORT    ", Style::default().fg(MUTED)),
             Span::raw(
                 app.snapshot
                     .config
@@ -285,23 +511,79 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("Allow LAN  ", Style::default().fg(MUTED)),
-            Span::raw(bool_text(app.snapshot.config.allow_lan)),
+            Span::styled("ALLOW LAN     ", Style::default().fg(MUTED)),
+            status_badge(bool_text(app.snapshot.config.allow_lan)),
         ]),
         Line::from(vec![
-            Span::styled("IPv6       ", Style::default().fg(MUTED)),
-            Span::raw(bool_text(app.snapshot.config.ipv6)),
+            Span::styled("IPV6          ", Style::default().fg(MUTED)),
+            status_badge(bool_text(app.snapshot.config.ipv6)),
         ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "s start/stop core · m cycle Rule → Global → Direct",
-            Style::default().fg(MUTED),
-        )),
     ];
     frame.render_widget(
-        Paragraph::new(info).block(Block::bordered().title(" Runtime ")),
-        rows[1],
+        Paragraph::new(info).block(panel(" Runtime ")),
+        inset_panel(details[0]),
     );
+
+    if details.len() > 1 && details[1].width > 0 {
+        let selected = app
+            .selected_group()
+            .map(|(name, group)| {
+                vec![
+                    Line::styled("CURRENT ROUTE", Style::default().fg(MUTED)),
+                    Line::styled(
+                        name,
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Line::from(""),
+                    Line::styled("SELECTED NODE", Style::default().fg(MUTED)),
+                    Line::styled(
+                        value_or_dash(&group.now),
+                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    ),
+                    Line::from(""),
+                    Line::styled(
+                        "Open Proxies to switch or test nodes.",
+                        Style::default().fg(MUTED),
+                    ),
+                ]
+            })
+            .unwrap_or_else(|| {
+                vec![Line::styled(
+                    "No proxy group available",
+                    Style::default().fg(MUTED),
+                )]
+            });
+        frame.render_widget(
+            Paragraph::new(selected)
+                .wrap(Wrap { trim: true })
+                .block(panel(" Active route ")),
+            inset_panel(details[1]),
+        );
+    }
+}
+
+fn dashboard_card_areas(area: Rect) -> Vec<Rect> {
+    if area.width >= 72 {
+        Layout::horizontal([Constraint::Ratio(1, 4); 4])
+            .split(Rect::new(area.x, area.y, area.width, area.height.min(5)))
+            .iter()
+            .copied()
+            .map(inset_panel)
+            .collect()
+    } else {
+        let rows = Layout::vertical([Constraint::Length(5), Constraint::Length(5)])
+            .split(Rect::new(area.x, area.y, area.width, area.height.min(10)));
+        let top = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(rows[0]);
+        let bottom = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(rows[1]);
+        vec![
+            inset_panel(top[0]),
+            inset_panel(top[1]),
+            inset_panel(bottom[0]),
+            inset_panel(bottom[1]),
+        ]
+    }
 }
 
 fn profiles(frame: &mut Frame, app: &App, area: Rect) {
@@ -342,32 +624,86 @@ fn profiles(frame: &mut Frame, app: &App, area: Rect) {
     )
     .header(
         Row::new(["", "Name", "Type", "Subscription", "Updated"])
-            .style(Style::default().fg(ACCENT)),
+            .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD))
+            .bottom_margin(1),
     )
-    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-    .highlight_symbol("› ")
-    .block(
-        Block::bordered().title(" Profiles  [a import · Enter activate · u update · D delete] "),
-    );
+    .row_highlight_style(selection_style(true))
+    .highlight_symbol("▎ ")
+    .block(panel(" Profiles "));
     let mut state = TableState::default().with_selected(Some(app.profile_index));
     frame.render_stateful_widget(table, area, &mut state);
 }
 
 fn card(frame: &mut Frame, area: Rect, title: &str, value: &str, color: Color) {
     frame.render_widget(
-        Paragraph::new(value)
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(color).add_modifier(Modifier::BOLD))
-            .block(Block::bordered().title(format!(" {title} "))),
+        Paragraph::new(vec![
+            Line::from(""),
+            Line::styled(
+                title,
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            ),
+            Line::styled(
+                value,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+        ])
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(SURFACE)),
         area,
     );
 }
 
+fn inset_panel(area: Rect) -> Rect {
+    if area.width > 4 {
+        area.inner(Margin::new(1, 0))
+    } else {
+        area
+    }
+}
+
+fn panel<'a>(title: &'a str) -> Block<'a> {
+    Block::default()
+        .style(Style::default().bg(SURFACE))
+        .padding(Padding::new(1, 1, 1, 1))
+        .title(Span::styled(
+            title,
+            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+        ))
+}
+
+fn focus_panel<'a>(title: &'a str, focused: bool) -> Block<'a> {
+    Block::default()
+        .style(Style::default().bg(SURFACE))
+        .padding(Padding::new(1, 1, 1, 1))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(if focused { ACCENT } else { MUTED })
+                .add_modifier(Modifier::BOLD),
+        ))
+}
+
+fn selection_style(focused: bool) -> Style {
+    if focused {
+        Style::default()
+            .fg(Color::White)
+            .bg(SURFACE_ACTIVE)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(MUTED)
+    }
+}
+
+fn status_badge(value: &'static str) -> Span<'static> {
+    let color = if value == "on" { SUCCESS } else { MUTED };
+    Span::styled(
+        value.to_uppercase(),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )
+}
+
 fn proxies(frame: &mut Frame, app: &App, area: Rect) {
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(area);
+    let columns = proxy_columns(area);
     let groups = app.proxy_groups();
     let group_items: Vec<_> = groups
         .iter()
@@ -380,16 +716,12 @@ fn proxies(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let mut group_state = ListState::default().with_selected(Some(app.group_index));
-    let group_border = if !app.node_focus { ACCENT } else { MUTED };
+    let group_focused = !app.node_focus;
     frame.render_stateful_widget(
         List::new(group_items)
-            .highlight_symbol("› ")
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD))
-            .block(
-                Block::bordered()
-                    .border_style(Style::default().fg(group_border))
-                    .title(" Proxy groups "),
-            ),
+            .highlight_symbol("▎ ")
+            .highlight_style(selection_style(group_focused))
+            .block(focus_panel(" Proxy groups ", group_focused)),
         columns[0],
         &mut group_state,
     );
@@ -415,19 +747,24 @@ fn proxies(frame: &mut Frame, app: &App, area: Rect) {
         })
         .unwrap_or_default();
     let mut node_state = ListState::default().with_selected(Some(app.node_index));
-    let node_border = if app.node_focus { ACCENT } else { MUTED };
+    let node_focused = app.node_focus;
     frame.render_stateful_widget(
         List::new(nodes)
-            .highlight_symbol("› ")
-            .highlight_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
-            .block(
-                Block::bordered()
-                    .border_style(Style::default().fg(node_border))
-                    .title(" Nodes  [Tab focus · Enter select · d delay · p providers] "),
-            ),
+            .highlight_symbol("▎ ")
+            .highlight_style(selection_style(node_focused))
+            .block(focus_panel(" Nodes ", node_focused)),
         columns[1],
         &mut node_state,
     );
+}
+
+fn proxy_columns(area: Rect) -> Vec<Rect> {
+    Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(area)
+        .iter()
+        .copied()
+        .map(inset_panel)
+        .collect()
 }
 
 fn connections(frame: &mut Frame, app: &App, area: Rect) {
@@ -471,11 +808,12 @@ fn connections(frame: &mut Frame, app: &App, area: Rect) {
     let table = Table::new(rows, widths)
         .header(
             Row::new(["Destination", "Network", "Chain", "Traffic"])
-                .style(Style::default().fg(ACCENT)),
+                .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD))
+                .bottom_margin(1),
         )
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol("› ")
-        .block(Block::bordered().title(" Active connections  [x close · X close all] "));
+        .row_highlight_style(selection_style(true))
+        .highlight_symbol("▎ ")
+        .block(panel(" Active connections "));
     let mut state = TableState::default().with_selected(Some(app.connection_index));
     frame.render_stateful_widget(table, area, &mut state);
 }
@@ -496,10 +834,14 @@ fn rules(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Percentage(25),
         ],
     )
-    .header(Row::new(["Type", "Payload", "Policy"]).style(Style::default().fg(ACCENT)))
-    .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-    .highlight_symbol("› ")
-    .block(Block::bordered().title(" Rules  [p update providers] "));
+    .header(
+        Row::new(["Type", "Payload", "Policy"])
+            .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD))
+            .bottom_margin(1),
+    )
+    .row_highlight_style(selection_style(true))
+    .highlight_symbol("▎ ")
+    .block(panel(" Rules "));
     let mut state = TableState::default().with_selected(Some(app.rule_index));
     frame.render_stateful_widget(table, area, &mut state);
 }
@@ -510,10 +852,7 @@ fn logs(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|line| ListItem::new(line.as_str()))
         .collect();
-    frame.render_widget(
-        List::new(items).block(Block::bordered().title(" Mihomo logs  [r refresh] ")),
-        area,
-    );
+    frame.render_widget(List::new(items).block(panel(" Mihomo logs ")), area);
 }
 
 fn unlock(frame: &mut Frame, app: &App, area: Rect) {
@@ -536,9 +875,11 @@ fn unlock(frame: &mut Frame, app: &App, area: Rect) {
             ],
         )
         .header(
-            Row::new(["Service", "Status", "Region", "Checked"]).style(Style::default().fg(ACCENT)),
+            Row::new(["Service", "Status", "Region", "Checked"])
+                .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD))
+                .bottom_margin(1),
         )
-        .block(Block::bordered().title(" Media & AI unlock  [c check] ")),
+        .block(panel(" Media & AI unlock ")),
         area,
     );
 }
@@ -572,59 +913,95 @@ fn settings(frame: &mut Frame, app: &App, area: Rect) {
     let mut state = ListState::default().with_selected(Some(app.setting_index));
     frame.render_stateful_widget(
         List::new(items)
-            .highlight_symbol("› ")
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-            .block(
-                Block::bordered().title(" Settings  [Enter toggle · b backup · R restore latest] "),
-            ),
+            .highlight_symbol("▎ ")
+            .highlight_style(selection_style(true))
+            .block(panel(" Settings ")),
         area,
         &mut state,
     );
 }
 
 fn help(frame: &mut Frame, _app: &App, area: Rect) {
-    let text = vec![
-        Line::styled(
-            "Keyboard",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        Line::from(""),
-        Line::from("1–9 / ← →    switch page"),
-        Line::from("j k / ↑ ↓    move selection"),
-        Line::from("Tab           switch proxy pane"),
-        Line::from("Enter         select proxy node"),
-        Line::from("d             test selected node delay"),
-        Line::from("m             cycle core mode"),
-        Line::from("s             start/stop managed Mihomo"),
-        Line::from("a/u/D         import/update/delete profile"),
-        Line::from("x / X         close one / all connections"),
-        Line::from("r             refresh now"),
-        Line::from("q / Ctrl-C    quit"),
-        Line::from(""),
-        Line::styled(
-            "Mouse",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        Line::from(""),
-        Line::from("click         switch page / select row"),
-        Line::from("double-click  activate proxy/profile/setting"),
-        Line::from("wheel         move selection"),
-        Line::from("click cards   start/stop core or cycle mode"),
-        Line::from("Settings      Enter runs core / GeoData updates"),
-        Line::from(""),
-        Line::styled(
-            "Configuration",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        Line::from("~/.config/omash/config.toml"),
-        Line::from("Mihomo is installed and supervised exclusively by omash."),
-    ];
+    frame.render_widget(panel(" Keyboard shortcuts "), area);
+    render_help_columns(frame, area.inner(Margin::new(2, 2)));
+}
+
+fn draw_help_overlay(frame: &mut Frame) {
+    let height = frame.area().height.saturating_sub(4).clamp(8, 22);
+    let area = centered(76, height, frame.area());
+    frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(text)
-            .wrap(Wrap { trim: false })
-            .block(Block::bordered().title(" Help ")),
+        panel(" Keyboard shortcuts  ·  Esc to close ").border_style(Style::default().fg(ACCENT)),
         area,
     );
+    render_help_columns(frame, area.inner(Margin::new(2, 2)));
+}
+
+fn render_help_columns(frame: &mut Frame, area: Rect) {
+    let columns = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(area);
+    let navigation = vec![
+        section_line("NAVIGATION"),
+        help_binding("1–9", "Open page"),
+        help_binding("↑↓ / jk", "Move selection"),
+        help_binding("Tab", "Switch proxy pane"),
+        help_binding("←→ / hl", "Switch proxy pane"),
+        Line::from(""),
+        section_line("GLOBAL"),
+        help_binding("r", "Refresh data"),
+        help_binding("?", "Toggle shortcuts"),
+        help_binding("Esc", "Close dialog"),
+        help_binding("q", "Quit"),
+        help_binding("Ctrl-C", "Quit"),
+    ];
+    let actions = vec![
+        section_line("CONTEXTUAL ACTIONS"),
+        help_binding("Enter", "Activate selection"),
+        help_binding("s", "Start / stop core"),
+        help_binding("m", "Cycle routing mode"),
+        help_binding("d", "Test node delay"),
+        help_binding("a", "Import profile"),
+        help_binding("u", "Update profile"),
+        help_binding("D", "Delete profile"),
+        help_binding("x / X", "Close one / all connections"),
+        help_binding("p", "Update providers"),
+        help_binding("c", "Run unlock checks"),
+        help_binding("b / R", "Backup / restore"),
+        Line::from(""),
+        section_line("MOUSE"),
+        help_binding("Click", "Focus item"),
+        help_binding("Double", "Activate item"),
+        help_binding("Wheel", "Move selection"),
+    ];
+    frame.render_widget(Paragraph::new(navigation), inset_panel(columns[0]));
+    frame.render_widget(Paragraph::new(actions), inset_panel(columns[1]));
+}
+
+fn section_line(title: &'static str) -> Line<'static> {
+    Line::styled(
+        title,
+        Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+    )
+}
+
+fn help_binding(key: &'static str, description: &'static str) -> Line<'static> {
+    let key_color = if matches!(key, "D" | "X" | "R") {
+        DANGER
+    } else {
+        ACCENT
+    };
+    Line::from(vec![
+        Span::styled(
+            format!(" {key:<9}"),
+            Style::default()
+                .fg(key_color)
+                .bg(SURFACE_ACTIVE)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  {description}"),
+            Style::default().fg(Color::White),
+        ),
+    ])
 }
 
 fn draw_input(frame: &mut Frame, app: &App) {
@@ -642,11 +1019,17 @@ fn draw_input(frame: &mut Frame, app: &App) {
         None => return,
     };
     frame.render_widget(
-        Paragraph::new(content).block(
-            Block::bordered()
-                .border_style(Style::default().fg(ACCENT))
-                .title(title),
-        ),
+        Paragraph::new(content)
+            .style(Style::default().bg(SURFACE))
+            .block(
+                Block::default()
+                    .style(Style::default().bg(SURFACE))
+                    .padding(Padding::new(2, 2, 2, 1))
+                    .title(Span::styled(
+                        title,
+                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    )),
+            ),
         area,
     );
 }
@@ -667,14 +1050,91 @@ fn centered(percent: u16, height: u16, area: Rect) -> Rect {
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    let color = if app.online { MUTED } else { Color::Red };
+    let color = if app.online { SUCCESS } else { DANGER };
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(format!(" {} ", app.status), Style::default().fg(color)),
-            Span::styled("  q quit · ? help", Style::default().fg(MUTED)),
-        ])),
+        Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(BORDER)),
         area,
     );
+    if area.height < 2 {
+        return;
+    }
+    let inner = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(1),
+    );
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("● ", Style::default().fg(color)),
+            Span::styled(&app.status, Style::default().fg(Color::Rgb(190, 199, 214))),
+        ])),
+        rows[0],
+    );
+    frame.render_widget(Paragraph::new(shortcut_line(app.tab, inner.width)), rows[1]);
+}
+
+fn contextual_hints(tab: Tab) -> &'static [(&'static str, &'static str)] {
+    match tab {
+        Tab::Dashboard => &[("s", "Core"), ("m", "Mode")],
+        Tab::Proxies => &[
+            ("Tab", "Pane"),
+            ("Enter", "Select"),
+            ("d", "Delay"),
+            ("p", "Update"),
+        ],
+        Tab::Profiles => &[
+            ("Enter", "Activate"),
+            ("a", "Import"),
+            ("u", "Update"),
+            ("D", "Delete"),
+        ],
+        Tab::Connections => &[("x", "Close"), ("X", "Close all")],
+        Tab::Rules => &[("p", "Update")],
+        Tab::Logs => &[("r", "Refresh")],
+        Tab::Unlock => &[("c", "Check")],
+        Tab::Settings => &[("Enter", "Change"), ("b", "Backup"), ("R", "Restore")],
+        Tab::Help => &[],
+    }
+}
+
+fn shortcut_line(tab: Tab, width: u16) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut used = 0usize;
+    let reserved = 19usize;
+    for &(key, description) in contextual_hints(tab) {
+        let size = key.chars().count() + description.chars().count() + 5;
+        if used + size + reserved > width as usize {
+            break;
+        }
+        push_hint(&mut spans, key, description);
+        used += size;
+    }
+    push_hint(&mut spans, "?", "Help");
+    push_hint(&mut spans, "q", "Quit");
+    Line::from(spans)
+}
+
+fn push_hint(spans: &mut Vec<Span<'static>>, key: &'static str, description: &'static str) {
+    let key_color = if matches!(key, "D" | "X" | "R") {
+        DANGER
+    } else {
+        ACCENT
+    };
+    spans.push(Span::styled(
+        format!(" {key} "),
+        Style::default()
+            .fg(key_color)
+            .bg(SURFACE_ACTIVE)
+            .add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(
+        format!(" {description}  "),
+        Style::default().fg(MUTED),
+    ));
 }
 
 fn bytes(value: u64) -> String {
