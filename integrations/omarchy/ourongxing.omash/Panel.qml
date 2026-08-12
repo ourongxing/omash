@@ -347,22 +347,11 @@ Panel {
                       readonly property bool selected: root.selectedGroupName === String(modelData.name)
                       width: groupList.width
                       height: implicitHeight
-                      implicitHeight: Math.max(groupMarker.implicitHeight, groupLabel.implicitHeight, groupProxy.implicitHeight) + Style.space(1)
-
-                      Text {
-                        id: groupMarker
-                        anchors.left: parent.left
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: Style.space(12)
-                        text: groupDelegate.selected ? "●" : ""
-                        color: Color.accent
-                        font.family: root.contentFontFamily
-                        font.pixelSize: Style.font.caption
-                      }
+                      implicitHeight: Math.max(groupLabel.implicitHeight, groupProxy.implicitHeight) + Style.space(1)
 
                       Text {
                         id: groupLabel
-                        anchors.left: groupMarker.right
+                        anchors.left: parent.left
                         anchors.right: groupProxy.left
                         anchors.rightMargin: Style.space(2)
                         anchors.verticalCenter: parent.verticalCenter

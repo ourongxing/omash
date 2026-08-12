@@ -6,8 +6,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, Clear, List, ListItem, ListState, Padding, Paragraph, Row, Table,
-        TableState, Tabs, Wrap,
+        Block, Borders, Cell, Clear, HighlightSpacing, List, ListItem, ListState, Padding,
+        Paragraph, Row, Table, TableState, Tabs, Wrap,
     },
 };
 
@@ -763,16 +763,19 @@ fn status_badge(value: &'static str, theme: &Theme) -> Span<'static> {
 fn proxies(frame: &mut Frame, app: &App, area: Rect) {
     let columns = proxy_columns(area);
     let groups = app.proxy_groups();
+    let row_width = columns[0].width.saturating_sub(6) as usize;
+    let proxy_width = 10.min(row_width.saturating_sub(2) / 2);
+    let name_width = row_width.saturating_sub(proxy_width + 1);
     let group_items: Vec<_> = groups
         .iter()
         .map(|(name, proxy)| {
             ListItem::new(Line::from(vec![
-                Span::raw(format!("{name:<18}")),
+                Span::raw(fit_column(name, name_width, false)),
+                Span::raw(" "),
                 Span::styled(
-                    format!("{:<10}", proxy.kind),
+                    fit_column(&proxy.now, proxy_width, true),
                     Style::default().fg(app.theme.muted),
                 ),
-                Span::styled(&proxy.now, Style::default().fg(app.theme.accent)),
             ]))
         })
         .collect();
@@ -781,12 +784,16 @@ fn proxies(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(
         List::new(group_items)
             .highlight_symbol("▎ ")
+            .highlight_spacing(HighlightSpacing::Always)
             .highlight_style(selection_style(group_focused, &app.theme))
             .block(focus_panel(" Proxy groups ", group_focused, &app.theme)),
         columns[0],
         &mut group_state,
     );
 
+    let node_row_width = columns[1].width.saturating_sub(6) as usize;
+    let delay_width = 8.min(node_row_width.saturating_sub(6) / 3);
+    let node_name_width = node_row_width.saturating_sub(delay_width + 5);
     let nodes: Vec<_> = app
         .selected_group()
         .map(|(_, group)| {
@@ -798,25 +805,75 @@ fn proxies(frame: &mut Frame, app: &App, area: Rect) {
                     let delay = proxy
                         .and_then(|p| p.history.last())
                         .map_or_else(|| "—".into(), |h| format!("{} ms", h.delay));
-                    let alive = proxy
-                        .and_then(|p| p.alive)
-                        .map_or("", |a| if a { "●" } else { "×" });
+                    let (alive, alive_color) = match proxy.and_then(|p| p.alive) {
+                        Some(true) => ("●", app.theme.success),
+                        Some(false) => ("×", app.theme.danger),
+                        None => (" ", app.theme.muted),
+                    };
                     let active = if group.now == *name { "✓" } else { " " };
-                    ListItem::new(format!("{active} {name:<32} {alive:<2} {delay}"))
+                    ListItem::new(Line::from(vec![
+                        Span::styled(format!("{active} "), Style::default().fg(app.theme.accent)),
+                        Span::raw(fit_column(name, node_name_width, false)),
+                        Span::raw(" "),
+                        Span::styled(alive, Style::default().fg(alive_color)),
+                        Span::raw(" "),
+                        Span::styled(
+                            fit_column(&delay, delay_width, true),
+                            Style::default().fg(app.theme.muted),
+                        ),
+                    ]))
                 })
                 .collect()
         })
         .unwrap_or_default();
     let mut node_state = ListState::default().with_selected(Some(app.node_index));
     let node_focused = app.node_focus;
+    let node_title = match app.selected_group() {
+        Some((_, group)) if !group.kind.eq_ignore_ascii_case("selector") => " Nodes · automatic ",
+        _ => " Nodes ",
+    };
     frame.render_stateful_widget(
         List::new(nodes)
             .highlight_symbol("▎ ")
+            .highlight_spacing(HighlightSpacing::Always)
             .highlight_style(selection_style(node_focused, &app.theme))
-            .block(focus_panel(" Nodes ", node_focused, &app.theme)),
+            .block(focus_panel(node_title, node_focused, &app.theme)),
         columns[1],
         &mut node_state,
     );
+}
+
+fn fit_column(value: &str, width: usize, align_right: bool) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let value_width = Line::from(value).width();
+    if value_width <= width {
+        let padding = " ".repeat(width - value_width);
+        return if align_right {
+            format!("{padding}{value}")
+        } else {
+            format!("{value}{padding}")
+        };
+    }
+    if width == 1 {
+        return "…".into();
+    }
+
+    let content_width = width - 1;
+    let mut result = String::new();
+    let mut used = 0;
+    for character in value.chars() {
+        let character_width = Line::from(character.to_string()).width();
+        if used + character_width > content_width {
+            break;
+        }
+        result.push(character);
+        used += character_width;
+    }
+    result.push('…');
+    result.push_str(&" ".repeat(content_width - used));
+    result
 }
 
 fn proxy_columns(area: Rect) -> Vec<Rect> {
@@ -1158,7 +1215,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
     );
     if wide {
         frame.render_widget(
-            Paragraph::new(shortcut_line(app.tab, inner.width, &app.theme)),
+            Paragraph::new(shortcut_line(app, inner.width, &app.theme)),
             Rect::new(inner.x, inner.y, inner.width, 1),
         );
     } else {
@@ -1177,21 +1234,22 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
             rows[0],
         );
         frame.render_widget(
-            Paragraph::new(shortcut_line(app.tab, inner.width, &app.theme)),
+            Paragraph::new(shortcut_line(app, inner.width, &app.theme)),
             rows[1],
         );
     }
 }
 
-fn contextual_hints(tab: Tab) -> &'static [(&'static str, &'static str)] {
-    match tab {
+fn contextual_hints(app: &App) -> &'static [(&'static str, &'static str)] {
+    match app.tab {
         Tab::Dashboard => &[("s", "Core"), ("m", "Mode")],
-        Tab::Proxies => &[
+        Tab::Proxies if app.selected_group_is_manual() => &[
             ("Tab", "Pane"),
             ("Enter", "Select"),
             ("d", "Delay"),
             ("p", "Update"),
         ],
+        Tab::Proxies => &[("Tab", "Pane"), ("d", "Delay"), ("p", "Update")],
         Tab::Profiles => &[
             ("Enter", "Activate"),
             ("a", "Import"),
@@ -1207,11 +1265,11 @@ fn contextual_hints(tab: Tab) -> &'static [(&'static str, &'static str)] {
     }
 }
 
-fn shortcut_line(tab: Tab, width: u16, theme: &Theme) -> Line<'static> {
+fn shortcut_line(app: &App, width: u16, theme: &Theme) -> Line<'static> {
     let mut spans = Vec::new();
     let mut used = 0usize;
     let reserved = 19usize;
-    for &(key, description) in contextual_hints(tab) {
+    for &(key, description) in contextual_hints(app) {
         let size = key.chars().count() + description.chars().count() + 5;
         if used + size + reserved > width as usize {
             break;
@@ -1291,6 +1349,13 @@ mod tests {
         assert_eq!(visible_start(0, 20, 5), 0);
         assert_eq!(visible_start(4, 20, 5), 0);
         assert_eq!(visible_start(7, 20, 5), 3);
+    }
+
+    #[test]
+    fn fits_proxy_group_columns_by_display_width() {
+        assert_eq!(fit_column("Group", 7, false), "Group  ");
+        assert_eq!(fit_column("Node", 7, true), "   Node");
+        assert_eq!(fit_column("节点选择", 6, false), "节点… ");
     }
 
     #[test]

@@ -322,6 +322,11 @@ impl App {
         self.proxy_groups().get(self.group_index).copied()
     }
 
+    pub fn selected_group_is_manual(&self) -> bool {
+        self.selected_group()
+            .is_some_and(|(_, group)| group.kind.eq_ignore_ascii_case("selector"))
+    }
+
     fn open_tab(&mut self, tab: Tab) {
         self.tab = tab;
     }
@@ -494,14 +499,21 @@ impl App {
 
     async fn select_node(&mut self) {
         let selected = self.selected_group().and_then(|(name, group)| {
-            group
-                .all
-                .get(self.node_index)
-                .map(|node| (name.clone(), node.clone()))
+            group.all.get(self.node_index).map(|node| {
+                (
+                    name.clone(),
+                    node.clone(),
+                    group.kind.eq_ignore_ascii_case("selector"),
+                )
+            })
         });
-        let Some((group, node)) = selected else {
+        let Some((group, node, manual)) = selected else {
             return;
         };
+        if !manual {
+            self.status = format!("{group} is managed automatically");
+            return;
+        }
         match self.api.select_proxy(&group, &node).await {
             Ok(()) => {
                 self.status = match self.profiles.record_selection(&group, &node) {
