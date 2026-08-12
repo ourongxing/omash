@@ -1,6 +1,10 @@
 ```text
-█▀█ █▄ ▄█ █▀█ █▀▀ █ █
-█▄█ █ ▀ █ █▀█ ▄▄█ █▀█
+ ██████╗ ███╗   ███╗ █████╗ ███████╗██╗  ██╗
+██╔═══██╗████╗ ████║██╔══██╗██╔════╝██║  ██║
+██║   ██║██╔████╔██║███████║███████╗███████║
+██║   ██║██║╚██╔╝██║██╔══██║╚════██║██╔══██║
+╚██████╔╝██║ ╚═╝ ██║██║  ██║███████║██║  ██║
+ ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
 ```
 
 `omash` 是面向 Mihomo 的纯 Rust 终端控制台，以 Ratatui 重现 Clash Verge Rev 的核心管理能力和工作流，不依赖 Node.js、WebView、TypeScript 或 JavaScript 运行时。
@@ -8,6 +12,16 @@
 Mihomo 默认由用户级 `omash-supervisor.service` 持久管理。用户无需配置 API 地址、Secret 或手工启动内核，关闭 TUI 也不会中断代理。
 
 后端行为直接以工作区中的 Clash Verge Rev Rust 实现为基准，不自行猜测 Mihomo 协议。当前对照基线和源码映射见 [`docs/UPSTREAM.md`](docs/UPSTREAM.md)。
+
+## 界面预览
+
+<p align="center">
+  <img src="screenshots/1.jpg" alt="omash 蓝色主题界面" width="49%">
+  <img src="screenshots/2.jpg" alt="omash 橙色主题界面" width="49%">
+</p>
+
+> [!TIP]
+> **omash 会自动跟随 Omarchy 主题。** 切换 Omarchy 配色后，运行中的 TUI 会实时同步，无需重启或手动配置。
 
 ## 当前可用
 
@@ -98,16 +112,16 @@ proxy_bypass = "localhost,127.0.0.1,::1"
 
 ## 主题
 
-omash 独立读取 `~/.config/omash/theme.toml`。主题支持部分覆盖，未填写的颜色沿用内置默认值。可复制示例开始配置：
+在 Omarchy 中，omash **默认自动跟随当前系统主题**。无论 TUI 是否已在运行，切换 Omarchy 配色后都会持续、实时同步，无需重启 omash。
+
+如果需要使用独立配色，omash 也可以读取 `~/.config/omash/theme.toml`。主题支持部分覆盖，未填写的颜色沿用内置默认值。可复制示例开始配置：
 
 ```bash
 mkdir -p ~/.config/omash
 cp themes/default.toml ~/.config/omash/theme.toml
 ```
 
-主题切换后，运行中的 TUI 会自动重新加载。颜色均使用 `#RRGGBB` 格式，字段含义见 [`themes/default.toml`](themes/default.toml)。
-
-如果 `theme.toml` 不存在且检测到 Omarchy，omash 会自动使用当前 Omarchy 配色，并在运行期间持续同步主题切换。创建或安装 `theme.toml` 后会立即停止同步，改用独立主题。
+独立主题修改后，运行中的 TUI 也会自动重新加载。颜色均使用 `#RRGGBB` 格式，字段含义见 [`themes/default.toml`](themes/default.toml)。创建或安装 `theme.toml` 后，omash 会停止跟随 Omarchy，改用该独立主题；删除它即可恢复自动跟随。
 
 ## Omarchy 状态栏
 
