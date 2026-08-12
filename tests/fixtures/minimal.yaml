@@ -1,0 +1,7 @@
+mixed-port: 17897
+external-controller: 127.0.0.1:19090
+mode: rule
+proxies: []
+proxy-groups: []
+rules:
+  - MATCH,DIRECT
