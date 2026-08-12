@@ -84,6 +84,7 @@ pub struct App {
     pub speeds: (u64, u64),
     pub input: Option<InputMode>,
     pub input_buffer: String,
+    pub help_open: bool,
     mouse_regions: Vec<ui::HitRegion>,
     last_click: Option<(ui::HitTarget, Instant)>,
 }
@@ -122,6 +123,7 @@ impl App {
             speeds: (0, 0),
             input: None,
             input_buffer: String::new(),
+            help_open: false,
             mouse_regions: Vec::new(),
             last_click: None,
         })
@@ -167,14 +169,15 @@ impl App {
             .map(|region| region.target);
         match mouse.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                if let Some(target) = target {
-                    self.focus_mouse_target(target);
-                }
-                self.move_selection(if mouse.kind == MouseEventKind::ScrollUp {
+                let delta = if mouse.kind == MouseEventKind::ScrollUp {
                     -1
                 } else {
                     1
-                });
+                };
+                if let Some(target) = target {
+                    self.focus_mouse_target(target);
+                }
+                self.move_selection(delta);
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 let Some(target) = target else { return };
@@ -233,20 +236,35 @@ impl App {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return Ok(true);
         }
+        if self.help_open {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('?') => self.help_open = false,
+                KeyCode::Char('q') => return Ok(true),
+                _ => {}
+            }
+            return Ok(false);
+        }
+        if let Some(tab) = Self::tab_shortcut(&key.code) {
+            self.open_tab(tab);
+            return Ok(false);
+        }
+        if key.code == KeyCode::Char('?') {
+            self.help_open = true;
+            return Ok(false);
+        }
+        if key.code == KeyCode::Char('q') {
+            return Ok(true);
+        }
         match key.code {
-            KeyCode::Char('q') => return Ok(true),
-            KeyCode::Char('1') => self.tab = Tab::Dashboard,
-            KeyCode::Char('2') => self.tab = Tab::Proxies,
-            KeyCode::Char('3') => self.tab = Tab::Profiles,
-            KeyCode::Char('4') => self.tab = Tab::Connections,
-            KeyCode::Char('5') => self.tab = Tab::Rules,
-            KeyCode::Char('6') => self.tab = Tab::Logs,
-            KeyCode::Char('7') => self.tab = Tab::Unlock,
-            KeyCode::Char('8') => self.tab = Tab::Settings,
-            KeyCode::Char('9') | KeyCode::Char('?') => self.tab = Tab::Help,
-            KeyCode::Right => self.next_tab(),
-            KeyCode::Left => self.previous_tab(),
-            KeyCode::Tab if self.tab == Tab::Proxies => self.node_focus = !self.node_focus,
+            KeyCode::Tab | KeyCode::BackTab if self.tab == Tab::Proxies => {
+                self.node_focus = !self.node_focus
+            }
+            KeyCode::Left | KeyCode::Char('h') if self.tab == Tab::Proxies => {
+                self.node_focus = false
+            }
+            KeyCode::Right | KeyCode::Char('l') if self.tab == Tab::Proxies => {
+                self.node_focus = true
+            }
             KeyCode::Down | KeyCode::Char('j') => self.move_selection(1),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1),
             KeyCode::Char('r') => self.refresh().await,
@@ -291,20 +309,23 @@ impl App {
         self.proxy_groups().get(self.group_index).copied()
     }
 
-    fn next_tab(&mut self) {
-        let index = Tab::ALL
-            .iter()
-            .position(|tab| *tab == self.tab)
-            .unwrap_or(0);
-        self.tab = Tab::ALL[(index + 1) % Tab::ALL.len()];
+    fn open_tab(&mut self, tab: Tab) {
+        self.tab = tab;
     }
 
-    fn previous_tab(&mut self) {
-        let index = Tab::ALL
-            .iter()
-            .position(|tab| *tab == self.tab)
-            .unwrap_or(0);
-        self.tab = Tab::ALL[(index + Tab::ALL.len() - 1) % Tab::ALL.len()];
+    fn tab_shortcut(code: &KeyCode) -> Option<Tab> {
+        match code {
+            KeyCode::Char('1') => Some(Tab::Dashboard),
+            KeyCode::Char('2') => Some(Tab::Proxies),
+            KeyCode::Char('3') => Some(Tab::Profiles),
+            KeyCode::Char('4') => Some(Tab::Connections),
+            KeyCode::Char('5') => Some(Tab::Rules),
+            KeyCode::Char('6') => Some(Tab::Logs),
+            KeyCode::Char('7') => Some(Tab::Unlock),
+            KeyCode::Char('8') => Some(Tab::Settings),
+            KeyCode::Char('9') => Some(Tab::Help),
+            _ => None,
+        }
     }
 
     fn move_selection(&mut self, delta: isize) {
