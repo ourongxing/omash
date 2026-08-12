@@ -1,4 +1,5 @@
 use crate::app::{App, Tab};
+use crate::theme::Theme;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Margin, Rect},
@@ -9,15 +10,6 @@ use ratatui::{
         TableState, Tabs, Wrap,
     },
 };
-
-const ACCENT: Color = Color::Rgb(103, 210, 255);
-const MUTED: Color = Color::Rgb(118, 130, 151);
-const BORDER: Color = Color::Rgb(55, 66, 84);
-const SURFACE: Color = Color::Rgb(24, 29, 39);
-const SURFACE_ACTIVE: Color = Color::Rgb(35, 47, 63);
-const SUCCESS: Color = Color::Rgb(91, 214, 151);
-const WARNING: Color = Color::Rgb(245, 190, 90);
-const DANGER: Color = Color::Rgb(244, 112, 122);
 
 #[derive(Clone, Copy)]
 struct ShellAreas {
@@ -55,7 +47,7 @@ impl HitRegion {
 
 pub fn draw(frame: &mut Frame, app: &App) -> Vec<HitRegion> {
     frame.render_widget(
-        Block::default().style(Style::default().bg(Color::Rgb(14, 18, 25))),
+        Block::default().style(Style::default().bg(app.theme.background)),
         frame.area(),
     );
     let shell = shell_areas(frame.area());
@@ -74,7 +66,7 @@ pub fn draw(frame: &mut Frame, app: &App) -> Vec<HitRegion> {
     }
     draw_status(frame, app, shell.status, shell.wide);
     if app.help_open {
-        draw_help_overlay(frame);
+        draw_help_overlay(frame, &app.theme);
     }
     if app.input.is_some() {
         draw_input(frame, app);
@@ -126,15 +118,15 @@ fn shell_areas(area: Rect) -> ShellAreas {
 
 fn hit_regions(app: &App, shell: ShellAreas) -> Vec<HitRegion> {
     let mut regions = tab_regions(shell.navigation, shell.wide);
-    if shell.wide {
-        if let Some(buttons) = sidebar_mode_button_areas(shell.navigation) {
-            regions.extend(buttons.into_iter().zip(["rule", "global", "direct"]).map(
-                |(area, mode)| HitRegion {
-                    area,
-                    target: HitTarget::RoutingMode(mode),
-                },
-            ));
-        }
+    if shell.wide
+        && let Some(buttons) = sidebar_mode_button_areas(shell.navigation)
+    {
+        regions.extend(buttons.into_iter().zip(["rule", "global", "direct"]).map(
+            |(area, mode)| HitRegion {
+                area,
+                target: HitTarget::RoutingMode(mode),
+            },
+        ));
     }
     match app.tab {
         Tab::Dashboard => {
@@ -277,7 +269,7 @@ fn draw_navigation(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
             Paragraph::new(Line::styled(
                 " O M A S H ",
                 Style::default()
-                    .fg(Color::White)
+                    .fg(app.theme.foreground)
                     .add_modifier(Modifier::BOLD),
             ))
             .alignment(Alignment::Center),
@@ -291,11 +283,11 @@ fn draw_navigation(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
             Tabs::new(titles)
                 .select(selected)
                 .divider(" ")
-                .style(Style::default().fg(MUTED))
+                .style(Style::default().fg(app.theme.muted))
                 .highlight_style(
                     Style::default()
-                        .fg(ACCENT)
-                        .bg(SURFACE_ACTIVE)
+                        .fg(app.theme.accent)
+                        .bg(app.theme.surface_active)
                         .add_modifier(Modifier::BOLD),
                 ),
             areas[1],
@@ -303,7 +295,10 @@ fn draw_navigation(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
         return;
     }
 
-    frame.render_widget(Block::default().style(Style::default().bg(SURFACE)), area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(app.theme.surface)),
+        area,
+    );
     let inner = area.inner(Margin::new(1, 1));
     let brand = Rect::new(inner.x, inner.y, inner.width, 3);
     frame.render_widget(
@@ -311,13 +306,13 @@ fn draw_navigation(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
             Line::from(vec![Span::styled(
                 "█▀█ █▄ ▄█ █▀█ █▀▀ █ █",
                 Style::default()
-                    .fg(Color::White)
+                    .fg(app.theme.foreground)
                     .add_modifier(Modifier::BOLD),
             )]),
             Line::from(vec![Span::styled(
                 "█▄█ █ ▀ █ █▀█ ▄▄█ █▀█",
                 Style::default()
-                    .fg(Color::White)
+                    .fg(app.theme.foreground)
                     .add_modifier(Modifier::BOLD),
             )]),
         ])
@@ -335,11 +330,11 @@ fn draw_navigation(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
         );
         let style = if active {
             Style::default()
-                .fg(ACCENT)
-                .bg(SURFACE_ACTIVE)
+                .fg(app.theme.accent)
+                .bg(app.theme.surface_active)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Rgb(190, 199, 214))
+            Style::default().fg(app.theme.foreground)
         };
         let marker = if active { "›" } else { " " };
         frame.render_widget(
@@ -362,12 +357,15 @@ fn draw_navigation(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
                     format!("{dot} {label}"),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 )]),
-                Line::styled(format!("  {}", app.status), Style::default().fg(MUTED)),
+                Line::styled(
+                    format!("  {}", app.status),
+                    Style::default().fg(app.theme.muted),
+                ),
             ]),
             state_area,
         );
         if let Some(buttons) = sidebar_mode_button_areas(area) {
-            draw_mode_buttons(frame, buttons, &app.snapshot.config.mode);
+            draw_mode_buttons(frame, buttons, &app.snapshot.config.mode, &app.theme);
         }
     }
 }
@@ -394,15 +392,15 @@ fn draw_page_header(frame: &mut Frame, app: &App, area: Rect) {
             Line::styled(
                 app.tab.title(),
                 Style::default()
-                    .fg(Color::White)
+                    .fg(app.theme.foreground)
                     .add_modifier(Modifier::BOLD),
             ),
-            Line::styled(subtitle, Style::default().fg(MUTED)),
+            Line::styled(subtitle, Style::default().fg(app.theme.muted)),
         ])
         .block(
             Block::default()
                 .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(BORDER)),
+                .border_style(Style::default().fg(app.theme.border)),
         ),
         area,
     );
@@ -435,28 +433,36 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             "●  Offline"
         },
-        if app.online { SUCCESS } else { DANGER },
+        if app.online {
+            app.theme.success
+        } else {
+            app.theme.danger
+        },
+        &app.theme,
     );
     card(
         frame,
         cards[1],
         "ROUTING MODE",
         &app.snapshot.config.mode.to_uppercase(),
-        ACCENT,
+        app.theme.accent,
+        &app.theme,
     );
     card(
         frame,
         cards[2],
         "LIVE TRAFFIC",
         &format!("↑ {}   ↓ {}", bytes(app.speeds.0), bytes(app.speeds.1)),
-        Color::Cyan,
+        app.theme.info,
+        &app.theme,
     );
     card(
         frame,
         cards[3],
         "SESSIONS",
         &app.snapshot.connections.connections.len().to_string(),
-        WARNING,
+        app.theme.warning,
+        &app.theme,
     );
 
     let card_height = if area.width >= 72 { 6 } else { 11 };
@@ -475,14 +481,14 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
     };
     let info = vec![
         Line::from(vec![
-            Span::styled("VERSION       ", Style::default().fg(MUTED)),
+            Span::styled("VERSION       ", Style::default().fg(app.theme.muted)),
             Span::styled(
                 value_or_dash(&app.snapshot.version.version),
-                Style::default().fg(Color::White),
+                Style::default().fg(app.theme.foreground),
             ),
         ]),
         Line::from(vec![
-            Span::styled("SUPERVISOR    ", Style::default().fg(MUTED)),
+            Span::styled("SUPERVISOR    ", Style::default().fg(app.theme.muted)),
             Span::raw(if app.supervisor.running {
                 format!(
                     "Managed · PID {} · {} restarts · {} reloads",
@@ -500,11 +506,11 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
             }),
         ]),
         Line::from(vec![
-            Span::styled("CONTROLLER    ", Style::default().fg(MUTED)),
+            Span::styled("CONTROLLER    ", Style::default().fg(app.theme.muted)),
             Span::raw(&app.config.controller),
         ]),
         Line::from(vec![
-            Span::styled("MIXED PORT    ", Style::default().fg(MUTED)),
+            Span::styled("MIXED PORT    ", Style::default().fg(app.theme.muted)),
             Span::raw(
                 app.snapshot
                     .config
@@ -513,51 +519,56 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("ALLOW LAN     ", Style::default().fg(MUTED)),
-            status_badge(bool_text(app.snapshot.config.allow_lan)),
+            Span::styled("ALLOW LAN     ", Style::default().fg(app.theme.muted)),
+            status_badge(bool_text(app.snapshot.config.allow_lan), &app.theme),
         ]),
         Line::from(vec![
-            Span::styled("IPV6          ", Style::default().fg(MUTED)),
-            status_badge(bool_text(app.snapshot.config.ipv6)),
+            Span::styled("IPV6          ", Style::default().fg(app.theme.muted)),
+            status_badge(bool_text(app.snapshot.config.ipv6), &app.theme),
         ]),
     ];
-    frame.render_widget(Paragraph::new(info).block(panel(" Runtime ")), details[0]);
+    frame.render_widget(
+        Paragraph::new(info).block(panel(" Runtime ", &app.theme)),
+        details[0],
+    );
 
     if details.len() > 1 && details[1].width > 0 {
         let selected = app
             .selected_group()
             .map(|(name, group)| {
                 vec![
-                    Line::styled("CURRENT ROUTE", Style::default().fg(MUTED)),
+                    Line::styled("CURRENT ROUTE", Style::default().fg(app.theme.muted)),
                     Line::styled(
                         name,
                         Style::default()
-                            .fg(Color::White)
+                            .fg(app.theme.foreground)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Line::from(""),
-                    Line::styled("SELECTED NODE", Style::default().fg(MUTED)),
+                    Line::styled("SELECTED NODE", Style::default().fg(app.theme.muted)),
                     Line::styled(
                         value_or_dash(&group.now),
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(app.theme.accent)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Line::from(""),
                     Line::styled(
                         "Open Proxies to switch or test nodes.",
-                        Style::default().fg(MUTED),
+                        Style::default().fg(app.theme.muted),
                     ),
                 ]
             })
             .unwrap_or_else(|| {
                 vec![Line::styled(
                     "No proxy group available",
-                    Style::default().fg(MUTED),
+                    Style::default().fg(app.theme.muted),
                 )]
             });
         frame.render_widget(
             Paragraph::new(selected)
                 .wrap(Wrap { trim: true })
-                .block(panel(" Active route ")),
+                .block(panel(" Active route ", &app.theme)),
             details[1],
         );
     }
@@ -598,7 +609,7 @@ fn sidebar_mode_button_areas(area: Rect) -> Option<[Rect; 3]> {
     Some([columns[0], columns[1], columns[2]])
 }
 
-fn draw_mode_buttons(frame: &mut Frame, buttons: [Rect; 3], current: &str) {
+fn draw_mode_buttons(frame: &mut Frame, buttons: [Rect; 3], current: &str, theme: &Theme) {
     for ((button, mode), label) in buttons
         .into_iter()
         .zip(["rule", "global", "direct"])
@@ -610,11 +621,11 @@ fn draw_mode_buttons(frame: &mut Frame, buttons: [Rect; 3], current: &str) {
                 .alignment(Alignment::Center)
                 .style(if active {
                     Style::default()
-                        .fg(Color::Black)
-                        .bg(ACCENT)
+                        .fg(theme.background)
+                        .bg(theme.accent)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(MUTED).bg(SURFACE_ACTIVE)
+                    Style::default().fg(theme.muted).bg(theme.surface_active)
                 }),
             button,
         );
@@ -659,23 +670,29 @@ fn profiles(frame: &mut Frame, app: &App, area: Rect) {
     )
     .header(
         Row::new(["", "Name", "Type", "Subscription", "Updated"])
-            .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(app.theme.muted)
+                    .add_modifier(Modifier::BOLD),
+            )
             .bottom_margin(1),
     )
-    .row_highlight_style(selection_style(true))
+    .row_highlight_style(selection_style(true, &app.theme))
     .highlight_symbol("▎ ")
-    .block(panel(" Profiles "));
+    .block(panel(" Profiles ", &app.theme));
     let mut state = TableState::default().with_selected(Some(app.profile_index));
     frame.render_stateful_widget(table, area, &mut state);
 }
 
-fn card(frame: &mut Frame, area: Rect, title: &str, value: &str, color: Color) {
+fn card(frame: &mut Frame, area: Rect, title: &str, value: &str, color: Color, theme: &Theme) {
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(""),
             Line::styled(
                 title,
-                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::BOLD),
             ),
             Line::styled(
                 value,
@@ -683,7 +700,7 @@ fn card(frame: &mut Frame, area: Rect, title: &str, value: &str, color: Color) {
             ),
         ])
         .alignment(Alignment::Center)
-        .style(Style::default().bg(SURFACE)),
+        .style(Style::default().bg(theme.surface)),
         area,
     );
 }
@@ -696,41 +713,47 @@ fn inset_panel(area: Rect) -> Rect {
     }
 }
 
-fn panel<'a>(title: &'a str) -> Block<'a> {
+fn panel<'a>(title: &'a str, theme: &Theme) -> Block<'a> {
     Block::default()
-        .style(Style::default().bg(SURFACE))
-        .padding(Padding::new(1, 1, 1, 1))
-        .title(Span::styled(
-            title,
-            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-        ))
-}
-
-fn focus_panel<'a>(title: &'a str, focused: bool) -> Block<'a> {
-    Block::default()
-        .style(Style::default().bg(SURFACE))
+        .style(Style::default().bg(theme.surface))
         .padding(Padding::new(1, 1, 1, 1))
         .title(Span::styled(
             title,
             Style::default()
-                .fg(if focused { ACCENT } else { MUTED })
+                .fg(theme.muted)
                 .add_modifier(Modifier::BOLD),
         ))
 }
 
-fn selection_style(focused: bool) -> Style {
+fn focus_panel<'a>(title: &'a str, focused: bool, theme: &Theme) -> Block<'a> {
+    Block::default()
+        .style(Style::default().bg(theme.surface))
+        .padding(Padding::new(1, 1, 1, 1))
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(if focused { theme.accent } else { theme.muted })
+                .add_modifier(Modifier::BOLD),
+        ))
+}
+
+fn selection_style(focused: bool, theme: &Theme) -> Style {
     if focused {
         Style::default()
-            .fg(Color::White)
-            .bg(SURFACE_ACTIVE)
+            .fg(theme.foreground)
+            .bg(theme.surface_active)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(MUTED)
+        Style::default().fg(theme.muted)
     }
 }
 
-fn status_badge(value: &'static str) -> Span<'static> {
-    let color = if value == "on" { SUCCESS } else { MUTED };
+fn status_badge(value: &'static str, theme: &Theme) -> Span<'static> {
+    let color = if value == "on" {
+        theme.success
+    } else {
+        theme.muted
+    };
     Span::styled(
         value.to_uppercase(),
         Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -745,8 +768,11 @@ fn proxies(frame: &mut Frame, app: &App, area: Rect) {
         .map(|(name, proxy)| {
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{name:<18}")),
-                Span::styled(format!("{:<10}", proxy.kind), Style::default().fg(MUTED)),
-                Span::styled(&proxy.now, Style::default().fg(ACCENT)),
+                Span::styled(
+                    format!("{:<10}", proxy.kind),
+                    Style::default().fg(app.theme.muted),
+                ),
+                Span::styled(&proxy.now, Style::default().fg(app.theme.accent)),
             ]))
         })
         .collect();
@@ -755,8 +781,8 @@ fn proxies(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(
         List::new(group_items)
             .highlight_symbol("▎ ")
-            .highlight_style(selection_style(group_focused))
-            .block(focus_panel(" Proxy groups ", group_focused)),
+            .highlight_style(selection_style(group_focused, &app.theme))
+            .block(focus_panel(" Proxy groups ", group_focused, &app.theme)),
         columns[0],
         &mut group_state,
     );
@@ -786,8 +812,8 @@ fn proxies(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(
         List::new(nodes)
             .highlight_symbol("▎ ")
-            .highlight_style(selection_style(node_focused))
-            .block(focus_panel(" Nodes ", node_focused)),
+            .highlight_style(selection_style(node_focused, &app.theme))
+            .block(focus_panel(" Nodes ", node_focused, &app.theme)),
         columns[1],
         &mut node_state,
     );
@@ -843,12 +869,16 @@ fn connections(frame: &mut Frame, app: &App, area: Rect) {
     let table = Table::new(rows, widths)
         .header(
             Row::new(["Destination", "Network", "Chain", "Traffic"])
-                .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD))
+                .style(
+                    Style::default()
+                        .fg(app.theme.muted)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .bottom_margin(1),
         )
-        .row_highlight_style(selection_style(true))
+        .row_highlight_style(selection_style(true, &app.theme))
         .highlight_symbol("▎ ")
-        .block(panel(" Active connections "));
+        .block(panel(" Active connections ", &app.theme));
     let mut state = TableState::default().with_selected(Some(app.connection_index));
     frame.render_stateful_widget(table, area, &mut state);
 }
@@ -871,12 +901,16 @@ fn rules(frame: &mut Frame, app: &App, area: Rect) {
     )
     .header(
         Row::new(["Type", "Payload", "Policy"])
-            .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(app.theme.muted)
+                    .add_modifier(Modifier::BOLD),
+            )
             .bottom_margin(1),
     )
-    .row_highlight_style(selection_style(true))
+    .row_highlight_style(selection_style(true, &app.theme))
     .highlight_symbol("▎ ")
-    .block(panel(" Rules "));
+    .block(panel(" Rules ", &app.theme));
     let mut state = TableState::default().with_selected(Some(app.rule_index));
     frame.render_stateful_widget(table, area, &mut state);
 }
@@ -887,7 +921,10 @@ fn logs(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|line| ListItem::new(line.as_str()))
         .collect();
-    frame.render_widget(List::new(items).block(panel(" Mihomo logs ")), area);
+    frame.render_widget(
+        List::new(items).block(panel(" Mihomo logs ", &app.theme)),
+        area,
+    );
 }
 
 fn unlock(frame: &mut Frame, app: &App, area: Rect) {
@@ -911,10 +948,14 @@ fn unlock(frame: &mut Frame, app: &App, area: Rect) {
         )
         .header(
             Row::new(["Service", "Status", "Region", "Checked"])
-                .style(Style::default().fg(MUTED).add_modifier(Modifier::BOLD))
+                .style(
+                    Style::default()
+                        .fg(app.theme.muted)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .bottom_margin(1),
         )
-        .block(panel(" Media & AI unlock ")),
+        .block(panel(" Media & AI unlock ", &app.theme)),
         area,
     );
 }
@@ -941,7 +982,7 @@ fn settings(frame: &mut Frame, app: &App, area: Rect) {
         .map(|(name, value)| {
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{name:<28}")),
-                Span::styled(value, Style::default().fg(ACCENT)),
+                Span::styled(value, Style::default().fg(app.theme.accent)),
             ]))
         })
         .collect();
@@ -949,92 +990,95 @@ fn settings(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(
         List::new(items)
             .highlight_symbol("▎ ")
-            .highlight_style(selection_style(true))
-            .block(panel(" Settings ")),
+            .highlight_style(selection_style(true, &app.theme))
+            .block(panel(" Settings ", &app.theme)),
         area,
         &mut state,
     );
 }
 
-fn help(frame: &mut Frame, _app: &App, area: Rect) {
-    frame.render_widget(panel(" Keyboard shortcuts "), area);
-    render_help_columns(frame, area.inner(Margin::new(2, 2)));
+fn help(frame: &mut Frame, app: &App, area: Rect) {
+    frame.render_widget(panel(" Keyboard shortcuts ", &app.theme), area);
+    render_help_columns(frame, area.inner(Margin::new(2, 2)), &app.theme);
 }
 
-fn draw_help_overlay(frame: &mut Frame) {
+fn draw_help_overlay(frame: &mut Frame, theme: &Theme) {
     let height = frame.area().height.saturating_sub(4).clamp(8, 22);
     let area = centered(76, height, frame.area());
     frame.render_widget(Clear, area);
     frame.render_widget(
-        panel(" Keyboard shortcuts  ·  Esc to close ").border_style(Style::default().fg(ACCENT)),
+        panel(" Keyboard shortcuts  ·  Esc to close ", theme)
+            .border_style(Style::default().fg(theme.accent)),
         area,
     );
-    render_help_columns(frame, area.inner(Margin::new(2, 2)));
+    render_help_columns(frame, area.inner(Margin::new(2, 2)), theme);
 }
 
-fn render_help_columns(frame: &mut Frame, area: Rect) {
+fn render_help_columns(frame: &mut Frame, area: Rect, theme: &Theme) {
     let columns = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(area);
     let navigation = vec![
-        section_line("NAVIGATION"),
-        help_binding("1–9", "Open page"),
-        help_binding("↑↓ / jk", "Move selection"),
-        help_binding("Tab", "Switch proxy pane"),
-        help_binding("←→ / hl", "Switch proxy pane"),
+        section_line("NAVIGATION", theme),
+        help_binding("1–9", "Open page", theme),
+        help_binding("↑↓ / jk", "Move selection", theme),
+        help_binding("Tab", "Switch proxy pane", theme),
+        help_binding("←→ / hl", "Switch proxy pane", theme),
         Line::from(""),
-        section_line("GLOBAL"),
-        help_binding("r", "Refresh data"),
-        help_binding("?", "Toggle shortcuts"),
-        help_binding("Esc", "Close dialog"),
-        help_binding("q", "Quit"),
-        help_binding("Ctrl-C", "Quit"),
+        section_line("GLOBAL", theme),
+        help_binding("r", "Refresh data", theme),
+        help_binding("?", "Toggle shortcuts", theme),
+        help_binding("Esc", "Close dialog", theme),
+        help_binding("q", "Quit", theme),
+        help_binding("Ctrl-C", "Quit", theme),
     ];
     let actions = vec![
-        section_line("CONTEXTUAL ACTIONS"),
-        help_binding("Enter", "Activate selection"),
-        help_binding("s", "Start / stop core"),
-        help_binding("m", "Cycle routing mode"),
-        help_binding("d", "Test node delay"),
-        help_binding("a", "Import profile"),
-        help_binding("u", "Update profile"),
-        help_binding("D", "Delete profile"),
-        help_binding("x / X", "Close one / all connections"),
-        help_binding("p", "Update providers"),
-        help_binding("c", "Run unlock checks"),
-        help_binding("b / R", "Backup / restore"),
+        section_line("CONTEXTUAL ACTIONS", theme),
+        help_binding("Enter", "Activate selection", theme),
+        help_binding("s", "Start / stop core", theme),
+        help_binding("m", "Cycle routing mode", theme),
+        help_binding("d", "Test node delay", theme),
+        help_binding("a", "Import profile", theme),
+        help_binding("u", "Update profile", theme),
+        help_binding("D", "Delete profile", theme),
+        help_binding("x / X", "Close one / all connections", theme),
+        help_binding("p", "Update providers", theme),
+        help_binding("c", "Run unlock checks", theme),
+        help_binding("b / R", "Backup / restore", theme),
         Line::from(""),
-        section_line("MOUSE"),
-        help_binding("Click", "Focus item"),
-        help_binding("Double", "Activate item"),
-        help_binding("Wheel", "Move selection"),
+        section_line("MOUSE", theme),
+        help_binding("Click", "Focus item", theme),
+        help_binding("Double", "Activate item", theme),
+        help_binding("Wheel", "Move selection", theme),
     ];
     frame.render_widget(Paragraph::new(navigation), inset_panel(columns[0]));
     frame.render_widget(Paragraph::new(actions), inset_panel(columns[1]));
 }
 
-fn section_line(title: &'static str) -> Line<'static> {
+fn section_line(title: &'static str, theme: &Theme) -> Line<'static> {
     Line::styled(
         title,
-        Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(theme.muted)
+            .add_modifier(Modifier::BOLD),
     )
 }
 
-fn help_binding(key: &'static str, description: &'static str) -> Line<'static> {
+fn help_binding(key: &'static str, description: &'static str, theme: &Theme) -> Line<'static> {
     let key_color = if matches!(key, "D" | "X" | "R") {
-        DANGER
+        theme.danger
     } else {
-        ACCENT
+        theme.accent
     };
     Line::from(vec![
         Span::styled(
             format!(" {key:<9}"),
             Style::default()
                 .fg(key_color)
-                .bg(SURFACE_ACTIVE)
+                .bg(theme.surface_active)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("  {description}"),
-            Style::default().fg(Color::White),
+            Style::default().fg(theme.foreground),
         ),
     ])
 }
@@ -1055,14 +1099,16 @@ fn draw_input(frame: &mut Frame, app: &App) {
     };
     frame.render_widget(
         Paragraph::new(content)
-            .style(Style::default().bg(SURFACE))
+            .style(Style::default().bg(app.theme.surface))
             .block(
                 Block::default()
-                    .style(Style::default().bg(SURFACE))
+                    .style(Style::default().bg(app.theme.surface))
                     .padding(Padding::new(2, 2, 2, 1))
                     .title(Span::styled(
                         title,
-                        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(app.theme.accent)
+                            .add_modifier(Modifier::BOLD),
                     )),
             ),
         area,
@@ -1086,11 +1132,11 @@ fn centered(percent: u16, height: u16, area: Rect) -> Rect {
 
 fn core_status(app: &App) -> (&'static str, &'static str, Color) {
     if app.online {
-        ("●", "CORE ONLINE", SUCCESS)
+        ("●", "CORE ONLINE", app.theme.success)
     } else if app.supervisor.running {
-        ("◐", "CORE STARTING", WARNING)
+        ("◐", "CORE STARTING", app.theme.warning)
     } else {
-        ("●", "CORE OFFLINE", DANGER)
+        ("●", "CORE OFFLINE", app.theme.danger)
     }
 }
 
@@ -1098,7 +1144,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
     frame.render_widget(
         Block::default()
             .borders(Borders::TOP)
-            .border_style(Style::default().fg(BORDER)),
+            .border_style(Style::default().fg(app.theme.border)),
         area,
     );
     if area.height < 2 {
@@ -1112,7 +1158,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
     );
     if wide {
         frame.render_widget(
-            Paragraph::new(shortcut_line(app.tab, inner.width)),
+            Paragraph::new(shortcut_line(app.tab, inner.width, &app.theme)),
             Rect::new(inner.x, inner.y, inner.width, 1),
         );
     } else {
@@ -1125,12 +1171,15 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
                     core_label,
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" · ", Style::default().fg(MUTED)),
-                Span::styled(&app.status, Style::default().fg(Color::Rgb(190, 199, 214))),
+                Span::styled(" · ", Style::default().fg(app.theme.muted)),
+                Span::styled(&app.status, Style::default().fg(app.theme.foreground)),
             ])),
             rows[0],
         );
-        frame.render_widget(Paragraph::new(shortcut_line(app.tab, inner.width)), rows[1]);
+        frame.render_widget(
+            Paragraph::new(shortcut_line(app.tab, inner.width, &app.theme)),
+            rows[1],
+        );
     }
 }
 
@@ -1158,7 +1207,7 @@ fn contextual_hints(tab: Tab) -> &'static [(&'static str, &'static str)] {
     }
 }
 
-fn shortcut_line(tab: Tab, width: u16) -> Line<'static> {
+fn shortcut_line(tab: Tab, width: u16, theme: &Theme) -> Line<'static> {
     let mut spans = Vec::new();
     let mut used = 0usize;
     let reserved = 19usize;
@@ -1167,30 +1216,35 @@ fn shortcut_line(tab: Tab, width: u16) -> Line<'static> {
         if used + size + reserved > width as usize {
             break;
         }
-        push_hint(&mut spans, key, description);
+        push_hint(&mut spans, key, description, theme);
         used += size;
     }
-    push_hint(&mut spans, "?", "Help");
-    push_hint(&mut spans, "q", "Quit");
+    push_hint(&mut spans, "?", "Help", theme);
+    push_hint(&mut spans, "q", "Quit", theme);
     Line::from(spans)
 }
 
-fn push_hint(spans: &mut Vec<Span<'static>>, key: &'static str, description: &'static str) {
+fn push_hint(
+    spans: &mut Vec<Span<'static>>,
+    key: &'static str,
+    description: &'static str,
+    theme: &Theme,
+) {
     let key_color = if matches!(key, "D" | "X" | "R") {
-        DANGER
+        theme.danger
     } else {
-        ACCENT
+        theme.accent
     };
     spans.push(Span::styled(
         format!(" {key} "),
         Style::default()
             .fg(key_color)
-            .bg(SURFACE_ACTIVE)
+            .bg(theme.surface_active)
             .add_modifier(Modifier::BOLD),
     ));
     spans.push(Span::styled(
         format!(" {description}  "),
-        Style::default().fg(MUTED),
+        Style::default().fg(theme.muted),
     ));
 }
 

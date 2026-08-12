@@ -4,7 +4,9 @@ mod backup;
 mod config;
 mod core;
 mod enhance;
+mod omarchy;
 mod profiles;
+mod theme;
 mod ui;
 mod updater;
 

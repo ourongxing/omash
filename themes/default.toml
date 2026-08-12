@@ -1,0 +1,16 @@
+# Main accent and secondary text.
+accent = "#67d2ff"
+muted = "#768297"
+
+# Outer background, panels, active rows, and dividers.
+background = "#0e1219"
+surface = "#181d27"
+surface_active = "#232f3f"
+border = "#374254"
+
+# Primary text and semantic status colors.
+foreground = "#ffffff"
+success = "#5bd697"
+warning = "#f5be5a"
+danger = "#f4707a"
+info = "#00ffff"

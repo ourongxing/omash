@@ -4,6 +4,7 @@ use crate::{
     config::Config,
     core::{self, SupervisorState},
     profiles::Profiles,
+    theme::Theme,
     ui, updater,
 };
 use anyhow::Result;
@@ -65,6 +66,7 @@ pub struct App {
     pub api: MihomoClient,
     pub snapshot: Snapshot,
     pub profiles: Profiles,
+    pub theme: Theme,
     pub supervisor: SupervisorState,
     pub logs: Vec<String>,
     pub unlock_items: Vec<UnlockItem>,
@@ -104,6 +106,7 @@ impl App {
             api,
             snapshot: Snapshot::default(),
             profiles,
+            theme: Theme::load(),
             supervisor: core::supervisor_state(),
             logs: vec![],
             unlock_items: clash_verge_media_unlock::default_unlock_items(),
@@ -358,6 +361,7 @@ impl App {
     }
 
     async fn refresh(&mut self) {
+        self.theme.refresh();
         self.update_due_profiles().await;
         self.supervisor = core::supervisor_state();
         self.logs = core::CoreManager::recent_logs(200).unwrap_or_default();

@@ -25,6 +25,7 @@ Mihomo 默认由用户级 `omash-supervisor.service` 持久管理。用户无需
 - Mihomo Release 内核一键更新；yay 安装版仅作首次引导，自动复制为应用拥有的 sidecar，运行时不使用或修改 pacman 文件
 - GeoData 一键更新；优先使用 Mihomo API，网络失败时直连官方发布资源并原子替换
 - Linux `gsettings` 与 Omarchy/UWSM systemd 用户环境代理后端；代理启用期间新应用使用 UWSM service，确保 Chrome 继承实时代理
+- 独立 TUI 主题文件；未配置时自动持续同步 Omarchy 配色
 - Mihomo 日志查看
 - 与 Clash Verge Rev 共用的纯 Rust 流媒体/AI 解锁检测引擎
 - 本地 ZIP 备份及带确认的恢复
@@ -93,6 +94,19 @@ proxy_bypass = "localhost,127.0.0.1,::1"
 运行数据位于 `~/.local/share/omash/`。Mihomo 固定安装在 `~/.local/share/omash/bin/mihomo` 并由 omash 监管，不支持连接外部内核。`OMASH_REFRESH_MS` 和对应命令行参数优先于配置文件。
 
 配置页面中 `b` 创建备份，`R` 恢复最近备份；恢复前必须确认。选择 `Update Mihomo core` 或 `Update GeoData` 后按 `Enter` 即可更新，也可以使用鼠标双击执行。
+
+## 主题
+
+omash 独立读取 `~/.config/omash/theme.toml`。主题支持部分覆盖，未填写的颜色沿用内置默认值。可复制示例开始配置：
+
+```bash
+mkdir -p ~/.config/omash
+cp themes/default.toml ~/.config/omash/theme.toml
+```
+
+主题切换后，运行中的 TUI 会自动重新加载。颜色均使用 `#RRGGBB` 格式，字段含义见 [`themes/default.toml`](themes/default.toml)。
+
+如果 `theme.toml` 不存在且检测到 Omarchy，omash 会自动使用当前 Omarchy 配色，并在运行期间持续同步主题切换。创建或安装 `theme.toml` 后会立即停止同步，改用独立主题。
 
 ## License
 
