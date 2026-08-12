@@ -241,6 +241,10 @@ impl MihomoClient {
         self.request(Method::GET, &["version"], None).await
     }
 
+    pub async fn runtime_config(&self) -> Result<RuntimeConfig> {
+        self.request(Method::GET, &["configs"], None).await
+    }
+
     pub async fn proxies(&self) -> Result<ProxyResponse> {
         self.request(Method::GET, &["proxies"], None).await
     }
@@ -259,12 +263,28 @@ impl MihomoClient {
         url.query_pairs_mut()
             .append_pair("timeout", "5000")
             .append_pair("url", target);
-        let mut request = self.client.get(url);
+        let mut request = self.client.get(url).timeout(Duration::from_secs(8));
         if !self.secret.is_empty() {
             request = request.bearer_auth(&self.secret);
         }
         let response: DelayResponse = request.send().await?.error_for_status()?.json().await?;
         Ok(response.delay)
+    }
+
+    pub async fn test_group_delay(
+        &self,
+        group: &str,
+        target: &str,
+    ) -> Result<HashMap<String, u32>> {
+        let mut url = self.url(&["group", group, "delay"])?;
+        url.query_pairs_mut()
+            .append_pair("timeout", "5000")
+            .append_pair("url", target);
+        let mut request = self.client.get(url).timeout(Duration::from_secs(8));
+        if !self.secret.is_empty() {
+            request = request.bearer_auth(&self.secret);
+        }
+        Ok(request.send().await?.error_for_status()?.json().await?)
     }
 
     pub async fn set_mode(&self, mode: &str) -> Result<()> {

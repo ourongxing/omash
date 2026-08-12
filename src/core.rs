@@ -523,6 +523,7 @@ pub fn request_replace() -> Result<()> {
 
 fn load_daemon_config() -> Result<Config> {
     Config::load(&crate::config::Cli {
+        command: None,
         daemon: true,
         refresh_ms: None,
         config: None,

@@ -14,7 +14,7 @@ Mihomo 默认由用户级 `omash-supervisor.service` 持久管理。用户无需
 - Mihomo sidecar 启动、停止、API readiness 探测、热重载和配置预检
 - 用户级后台 supervisor、崩溃拉起、配置变化自动重启和随机 API 凭据
 - Dashboard、代理、配置文件、连接、规则、日志、解锁与设置页面
-- 代理组浏览、节点切换和节点延迟测试
+- 代理组按 Mihomo 配置声明顺序浏览、节点切换和节点延迟测试
 - 代理提供者和规则提供者手动更新
 - 活跃连接查看、关闭单条或全部连接
 - Rule / Global / Direct 模式切换
@@ -26,6 +26,7 @@ Mihomo 默认由用户级 `omash-supervisor.service` 持久管理。用户无需
 - GeoData 一键更新；优先使用 Mihomo API，网络失败时直连官方发布资源并原子替换
 - Linux `gsettings` 与 Omarchy/UWSM systemd 用户环境代理后端；代理启用期间新应用使用 UWSM service，确保 Chrome 继承实时代理
 - 独立 TUI 主题文件；未配置时自动持续同步 Omarchy 配色
+- 可选 Omarchy QML 状态栏组件，支持切换代理模式和 Selector 节点
 - Mihomo 日志查看
 - 与 Clash Verge Rev 共用的纯 Rust 流媒体/AI 解锁检测引擎
 - 本地 ZIP 备份及带确认的恢复
@@ -46,7 +47,7 @@ Mihomo 默认由用户级 `omash-supervisor.service` 持久管理。用户无需
 | `?` | 打开或关闭快捷键说明 |
 | `q`、`Ctrl-C` | 退出 TUI，不停止后台代理 |
 
-列表支持鼠标点击和滚轮移动，代理节点、配置文件及设置项支持双击执行。
+列表支持鼠标点击和滚轮移动，代理节点、配置文件及设置项支持双击执行。TUI 的 Proxy Groups 保持 `runtime.yaml` 中 `proxy-groups` 的声明顺序，不按名称重新排序；每个组中的节点保持 Mihomo 返回的原始顺序。
 
 ## 对等移植进度
 
@@ -107,6 +108,20 @@ cp themes/default.toml ~/.config/omash/theme.toml
 主题切换后，运行中的 TUI 会自动重新加载。颜色均使用 `#RRGGBB` 格式，字段含义见 [`themes/default.toml`](themes/default.toml)。
 
 如果 `theme.toml` 不存在且检测到 Omarchy，omash 会自动使用当前 Omarchy 配色，并在运行期间持续同步主题切换。创建或安装 `theme.toml` 后会立即停止同步，改用独立主题。
+
+## Omarchy 状态栏
+
+仓库附带一个原生 Quickshell 状态栏组件。点击 omash 图标可以切换 Rule、Global、Direct 模式；Proxy Groups 面板采用紧凑双栏布局，左栏显示代理组及当前选择，右栏显示所选组的节点和已测延迟，并可独立滚动。点击标题右侧的延迟测试按钮会测试当前组的全部节点。
+
+左栏只显示 Selector 类型的代理组，并保持 `runtime.yaml` 中 `proxy-groups` 的声明顺序；右栏节点保持 Mihomo 返回的原始顺序。安装后 Omarchy Shell 会自动热重载：
+
+```bash
+mkdir -p ~/.config/omarchy/plugins
+cp -r integrations/omarchy/ourongxing.omash ~/.config/omarchy/plugins/
+omarchy plugin enable ourongxing.omash --section right
+```
+
+组件通过内部的 `omash bar` 命令调用已有 Rust API 层，因此不会读取或复制 Mihomo API Secret；需要确保 `omash` 已安装在 Omarchy Shell 的 `PATH` 中。组件默认每 5 秒刷新一次，也可在 Omarchy 插件设置中调整为 2–60 秒。
 
 ## License
 

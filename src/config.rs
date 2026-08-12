@@ -1,11 +1,24 @@
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf, time::Duration};
+
+#[derive(Debug, Default, Deserialize)]
+struct RuntimeConfig {
+    #[serde(rename = "proxy-groups", default)]
+    proxy_groups: Vec<RuntimeGroup>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeGroup {
+    name: String,
+}
 
 #[derive(Debug, Parser)]
 #[command(version, about)]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Command>,
     /// Run the internal core supervisor
     #[arg(long, hide = true)]
     pub daemon: bool,
@@ -15,6 +28,48 @@ pub struct Cli {
     /// Alternative configuration file
     #[arg(long)]
     pub config: Option<PathBuf>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Internal status-bar integration
+    #[command(hide = true)]
+    Bar(BarArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct BarArgs {
+    #[command(subcommand)]
+    pub command: BarCommand,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ProxyMode {
+    Rule,
+    Global,
+    Direct,
+}
+
+impl ProxyMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Rule => "rule",
+            Self::Global => "global",
+            Self::Direct => "direct",
+        }
+    }
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BarCommand {
+    /// Print status-bar state as JSON
+    State,
+    /// Change the Mihomo routing mode
+    Mode { mode: ProxyMode },
+    /// Select a proxy in a selector group
+    Proxy { group: String, proxy: String },
+    /// Test every proxy in a selector group
+    Delay { group: String },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -115,6 +170,20 @@ impl Config {
         Self::data_dir().join("runtime.yaml")
     }
 
+    pub fn proxy_group_order() -> Vec<String> {
+        fs::read_to_string(Self::runtime_path())
+            .ok()
+            .and_then(|text| serde_yaml_ng::from_str::<RuntimeConfig>(&text).ok())
+            .map(|config| {
+                config
+                    .proxy_groups
+                    .into_iter()
+                    .map(|group| group.name)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     pub fn profiles_path() -> PathBuf {
         Self::data_dir().join("profiles.yaml")
     }
@@ -194,6 +263,7 @@ mod tests {
         )
         .unwrap();
         let cli = Cli {
+            command: None,
             daemon: false,
             refresh_ms: None,
             config: Some(path),
@@ -215,6 +285,7 @@ mod tests {
         )
         .unwrap();
         Config::load(&Cli {
+            command: None,
             daemon: false,
             refresh_ms: None,
             config: Some(path.clone()),

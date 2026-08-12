@@ -6,6 +6,7 @@ mod core;
 mod enhance;
 mod omarchy;
 mod profiles;
+mod statusbar;
 mod theme;
 mod ui;
 mod updater;
@@ -13,7 +14,7 @@ mod updater;
 use anyhow::Result;
 use app::App;
 use clap::Parser;
-use config::{Cli, Config};
+use config::{Cli, Command, Config};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
@@ -26,6 +27,9 @@ use std::io::{self, stdout};
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::load(&cli)?;
+    if let Some(Command::Bar(args)) = &cli.command {
+        return statusbar::run(&config, &args.command).await;
+    }
     core::ensure_managed_core().await?;
     if cli.daemon {
         return core::run_supervisor(config).await;

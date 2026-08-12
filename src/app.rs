@@ -15,7 +15,7 @@ use crossterm::event::{
 };
 use futures_util::StreamExt;
 use ratatui::{Terminal, backend::CrosstermBackend};
-use std::{cmp::min, io, path::PathBuf, time::Instant};
+use std::{cmp::min, collections::HashSet, io, path::PathBuf, time::Instant};
 use tokio::time;
 
 pub const SETTINGS_COUNT: usize = 8;
@@ -66,6 +66,7 @@ pub struct App {
     pub api: MihomoClient,
     pub snapshot: Snapshot,
     pub profiles: Profiles,
+    pub proxy_group_order: Vec<String>,
     pub theme: Theme,
     pub supervisor: SupervisorState,
     pub logs: Vec<String>,
@@ -106,6 +107,7 @@ impl App {
             api,
             snapshot: Snapshot::default(),
             profiles,
+            proxy_group_order: Config::proxy_group_order(),
             theme: Theme::load(),
             supervisor: core::supervisor_state(),
             logs: vec![],
@@ -298,13 +300,21 @@ impl App {
 
     pub fn proxy_groups(&self) -> Vec<(&String, &crate::api::Proxy)> {
         let mut values: Vec<_> = self
+            .proxy_group_order
+            .iter()
+            .filter_map(|name| self.snapshot.proxies.proxies.get_key_value(name))
+            .filter(|(_, proxy)| !proxy.all.is_empty())
+            .collect();
+        let configured: HashSet<_> = self.proxy_group_order.iter().collect();
+        let mut unconfigured: Vec<_> = self
             .snapshot
             .proxies
             .proxies
             .iter()
-            .filter(|(_, proxy)| !proxy.all.is_empty())
+            .filter(|(name, proxy)| !proxy.all.is_empty() && !configured.contains(name))
             .collect();
-        values.sort_by_key(|item| item.0.to_lowercase());
+        unconfigured.sort_by_key(|item| item.0.to_lowercase());
+        values.extend(unconfigured);
         values
     }
 
@@ -362,6 +372,7 @@ impl App {
 
     async fn refresh(&mut self) {
         self.theme.refresh();
+        self.proxy_group_order = Config::proxy_group_order();
         self.update_due_profiles().await;
         self.supervisor = core::supervisor_state();
         self.logs = core::CoreManager::recent_logs(200).unwrap_or_default();
