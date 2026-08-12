@@ -219,7 +219,7 @@ impl App {
         match target {
             ui::HitTarget::Tab(tab) => self.tab = tab,
             ui::HitTarget::CoreToggle => self.toggle_core().await,
-            ui::HitTarget::ModeCycle => self.cycle_mode().await,
+            ui::HitTarget::RoutingMode(mode) => self.set_mode(mode).await,
             ui::HitTarget::ProxyGroup(_) => self.node_index = 0,
             ui::HitTarget::ProxyNode(_) if double_click => self.select_node().await,
             ui::HitTarget::Profile(_) if double_click => self.select_profile().await,
@@ -461,6 +461,13 @@ impl App {
             "global" => "direct",
             _ => "rule",
         };
+        self.set_mode(mode).await;
+    }
+
+    async fn set_mode(&mut self, mode: &str) {
+        if self.snapshot.config.mode.eq_ignore_ascii_case(mode) {
+            return;
+        }
         match self.api.set_mode(mode).await {
             Ok(()) => {
                 self.status = format!("Mode changed to {mode}");

@@ -32,7 +32,7 @@ struct ShellAreas {
 pub enum HitTarget {
     Tab(Tab),
     CoreToggle,
-    ModeCycle,
+    RoutingMode(&'static str),
     ProxyGroup(usize),
     ProxyNode(usize),
     Profile(usize),
@@ -72,7 +72,7 @@ pub fn draw(frame: &mut Frame, app: &App) -> Vec<HitRegion> {
         Tab::Settings => settings(frame, app, shell.content),
         Tab::Help => help(frame, app, shell.content),
     }
-    draw_status(frame, app, shell.status);
+    draw_status(frame, app, shell.status, shell.wide);
     if app.help_open {
         draw_help_overlay(frame);
     }
@@ -84,8 +84,8 @@ pub fn draw(frame: &mut Frame, app: &App) -> Vec<HitRegion> {
 
 fn shell_areas(area: Rect) -> ShellAreas {
     let outer = area.inner(Margin::new(1, 0));
-    let rows = Layout::vertical([Constraint::Min(8), Constraint::Length(3)]).split(outer);
     if area.width >= 88 && area.height >= 24 {
+        let rows = Layout::vertical([Constraint::Min(8), Constraint::Length(2)]).split(outer);
         let columns = Layout::horizontal([
             Constraint::Length(23),
             Constraint::Length(2),
@@ -106,6 +106,7 @@ fn shell_areas(area: Rect) -> ShellAreas {
             wide: true,
         }
     } else {
+        let rows = Layout::vertical([Constraint::Min(8), Constraint::Length(3)]).split(outer);
         let main = Layout::vertical([
             Constraint::Length(4),
             Constraint::Length(5),
@@ -125,16 +126,22 @@ fn shell_areas(area: Rect) -> ShellAreas {
 
 fn hit_regions(app: &App, shell: ShellAreas) -> Vec<HitRegion> {
     let mut regions = tab_regions(shell.navigation, shell.wide);
+    if shell.wide {
+        if let Some(buttons) = sidebar_mode_button_areas(shell.navigation) {
+            regions.extend(buttons.into_iter().zip(["rule", "global", "direct"]).map(
+                |(area, mode)| HitRegion {
+                    area,
+                    target: HitTarget::RoutingMode(mode),
+                },
+            ));
+        }
+    }
     match app.tab {
         Tab::Dashboard => {
             let cards = dashboard_card_areas(shell.content);
             regions.push(HitRegion {
                 area: cards[0],
                 target: HitTarget::CoreToggle,
-            });
-            regions.push(HitRegion {
-                area: cards[1],
-                target: HitTarget::ModeCycle,
             });
         }
         Tab::Proxies => {
@@ -346,28 +353,22 @@ fn draw_navigation(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
             area.x + 2,
             area.bottom() - 5,
             area.width.saturating_sub(4),
-            3,
+            5,
         );
-        let (dot, label, color) = if app.online {
-            ("●", "CORE ONLINE", SUCCESS)
-        } else if app.supervisor.running {
-            ("◐", "CORE STARTING", WARNING)
-        } else {
-            ("●", "CORE OFFLINE", DANGER)
-        };
+        let (dot, label, color) = core_status(app);
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![Span::styled(
                     format!("{dot} {label}"),
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 )]),
-                Line::styled(
-                    format!("  {} mode", app.snapshot.config.mode),
-                    Style::default().fg(MUTED),
-                ),
+                Line::styled(format!("  {}", app.status), Style::default().fg(MUTED)),
             ]),
             state_area,
         );
+        if let Some(buttons) = sidebar_mode_button_areas(area) {
+            draw_mode_buttons(frame, buttons, &app.snapshot.config.mode);
+        }
     }
 }
 
@@ -467,6 +468,7 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
     );
     let details = if details_area.width >= 70 {
         Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)])
+            .spacing(2)
             .split(details_area)
     } else {
         Layout::horizontal([Constraint::Percentage(100), Constraint::Length(0)]).split(details_area)
@@ -519,10 +521,7 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
             status_badge(bool_text(app.snapshot.config.ipv6)),
         ]),
     ];
-    frame.render_widget(
-        Paragraph::new(info).block(panel(" Runtime ")),
-        inset_panel(details[0]),
-    );
+    frame.render_widget(Paragraph::new(info).block(panel(" Runtime ")), details[0]);
 
     if details.len() > 1 && details[1].width > 0 {
         let selected = app
@@ -559,7 +558,7 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
             Paragraph::new(selected)
                 .wrap(Wrap { trim: true })
                 .block(panel(" Active route ")),
-            inset_panel(details[1]),
+            details[1],
         );
     }
 }
@@ -567,22 +566,58 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
 fn dashboard_card_areas(area: Rect) -> Vec<Rect> {
     if area.width >= 72 {
         Layout::horizontal([Constraint::Ratio(1, 4); 4])
+            .spacing(2)
             .split(Rect::new(area.x, area.y, area.width, area.height.min(5)))
             .iter()
             .copied()
-            .map(inset_panel)
             .collect()
     } else {
         let rows = Layout::vertical([Constraint::Length(5), Constraint::Length(5)])
             .split(Rect::new(area.x, area.y, area.width, area.height.min(10)));
-        let top = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(rows[0]);
-        let bottom = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(rows[1]);
-        vec![
-            inset_panel(top[0]),
-            inset_panel(top[1]),
-            inset_panel(bottom[0]),
-            inset_panel(bottom[1]),
-        ]
+        let top = Layout::horizontal([Constraint::Ratio(1, 2); 2])
+            .spacing(2)
+            .split(rows[0]);
+        let bottom = Layout::horizontal([Constraint::Ratio(1, 2); 2])
+            .spacing(2)
+            .split(rows[1]);
+        vec![top[0], top[1], bottom[0], bottom[1]]
+    }
+}
+
+fn sidebar_mode_button_areas(area: Rect) -> Option<[Rect; 3]> {
+    if area.height < 28 {
+        return None;
+    }
+    let row = Rect::new(
+        area.x + 3,
+        area.bottom() - 2,
+        area.width.saturating_sub(6),
+        1,
+    );
+    let columns = Layout::horizontal([Constraint::Ratio(1, 3); 3]).split(row);
+    Some([columns[0], columns[1], columns[2]])
+}
+
+fn draw_mode_buttons(frame: &mut Frame, buttons: [Rect; 3], current: &str) {
+    for ((button, mode), label) in buttons
+        .into_iter()
+        .zip(["rule", "global", "direct"])
+        .zip(["RULE", "GLOBAL", "DIRECT"])
+    {
+        let active = current.eq_ignore_ascii_case(mode);
+        frame.render_widget(
+            Paragraph::new(label)
+                .alignment(Alignment::Center)
+                .style(if active {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(ACCENT)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(MUTED).bg(SURFACE_ACTIVE)
+                }),
+            button,
+        );
     }
 }
 
@@ -760,10 +795,10 @@ fn proxies(frame: &mut Frame, app: &App, area: Rect) {
 
 fn proxy_columns(area: Rect) -> Vec<Rect> {
     Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .spacing(2)
         .split(area)
         .iter()
         .copied()
-        .map(inset_panel)
         .collect()
 }
 
@@ -1049,8 +1084,17 @@ fn centered(percent: u16, height: u16, area: Rect) -> Rect {
     .split(vertical[1])[1]
 }
 
-fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    let color = if app.online { SUCCESS } else { DANGER };
+fn core_status(app: &App) -> (&'static str, &'static str, Color) {
+    if app.online {
+        ("●", "CORE ONLINE", SUCCESS)
+    } else if app.supervisor.running {
+        ("◐", "CORE STARTING", WARNING)
+    } else {
+        ("●", "CORE OFFLINE", DANGER)
+    }
+}
+
+fn draw_status(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
     frame.render_widget(
         Block::default()
             .borders(Borders::TOP)
@@ -1066,15 +1110,28 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         area.width.saturating_sub(2),
         area.height.saturating_sub(1),
     );
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("● ", Style::default().fg(color)),
-            Span::styled(&app.status, Style::default().fg(Color::Rgb(190, 199, 214))),
-        ])),
-        rows[0],
-    );
-    frame.render_widget(Paragraph::new(shortcut_line(app.tab, inner.width)), rows[1]);
+    if wide {
+        frame.render_widget(
+            Paragraph::new(shortcut_line(app.tab, inner.width)),
+            Rect::new(inner.x, inner.y, inner.width, 1),
+        );
+    } else {
+        let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
+        let (dot, core_label, color) = core_status(app);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(format!("{dot} "), Style::default().fg(color)),
+                Span::styled(
+                    core_label,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" · ", Style::default().fg(MUTED)),
+                Span::styled(&app.status, Style::default().fg(Color::Rgb(190, 199, 214))),
+            ])),
+            rows[0],
+        );
+        frame.render_widget(Paragraph::new(shortcut_line(app.tab, inner.width)), rows[1]);
+    }
 }
 
 fn contextual_hints(tab: Tab) -> &'static [(&'static str, &'static str)] {
