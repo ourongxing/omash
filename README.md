@@ -76,4 +76,4 @@ proxy_bypass = "localhost,127.0.0.1,::1"
 
 ## License
 
-MPL-2.0
+GPL-3.0-only

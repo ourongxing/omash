@@ -13,5 +13,6 @@
 
 ## Build verification
 
-- After every code modification, run `cargo build` directly.
-- Do not report a modification as complete until the build succeeds, or clearly report the build failure and its cause.
+- Run `cargo build` directly after modifying any Rust source file (`*.rs`).
+- Changes limited to documentation, metadata, configuration, licenses, or other non-Rust files do not require a build.
+- When a build is required, do not report the modification as complete until it succeeds, or clearly report the build failure and its cause.
