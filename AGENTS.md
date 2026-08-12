@@ -1,9 +1,10 @@
 # Repository Instructions
 
-## Pull requests
+## Branches and pull requests
 
+- Do not create or propose a new branch unless the user explicitly asks for one.
 - Do not create or propose a pull request unless the user explicitly asks for one.
-- A request to commit or push changes does not imply permission to create a pull request.
+- A request to commit or push changes does not imply permission to create a branch or pull request.
 
 ## Commit messages
 
