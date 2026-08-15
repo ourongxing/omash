@@ -19,7 +19,7 @@
 | WebDAV | 待移植 | — |
 | DNS/端口高级编辑 | 待移植 | — |
 | Provider 管理 | 基础已实现 | 批量更新 proxy/rule providers；详情页待移植 |
-| 系统自启动 | 待移植 | — |
+| 系统自启动 | Omarchy 已实现 | 包内 systemd 用户 unit；设置页控制图形登录自启动，旧版动态 unit 自动迁移 |
 | 特权服务 | 待移植 | — |
 | 内核与 GeoData 更新 | 已实现 | Mihomo release channel API 更新、用户托管核心、直连回退、GeoData 原子替换与 supervisor 重启 |
 

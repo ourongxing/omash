@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
     if cli.daemon {
         return core::run_supervisor(config).await;
     }
-    core::ensure_supervisor().await?;
+    core::ensure_supervisor(config.auto_start).await?;
     let mut app = App::new(config)?;
     let mut terminal = setup_terminal()?;
     let result = app.run(&mut terminal).await;

@@ -328,32 +328,46 @@ pub struct SupervisorState {
     pub error: Option<String>,
 }
 
-pub async fn ensure_supervisor() -> Result<()> {
-    let executable = std::env::current_exe()?;
-    let binary_modified = fs::metadata(&executable)?
-        .modified()?
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let unit_dir = dirs::config_dir()
+const SUPERVISOR_SERVICE: &str = "omash-supervisor.service";
+const PACKAGED_SUPERVISOR_UNIT: &str = "/usr/lib/systemd/user/omash-supervisor.service";
+
+pub async fn ensure_supervisor(auto_start: bool) -> Result<()> {
+    let migrated = migrate_legacy_supervisor_unit()?;
+    user_systemctl(&["daemon-reload"]).await?;
+    if migrated && auto_start {
+        user_systemctl(&["reenable", "--now", SUPERVISOR_SERVICE]).await?;
+    } else {
+        set_supervisor_autostart(auto_start).await?;
+    }
+    user_systemctl(&["start", SUPERVISOR_SERVICE]).await
+}
+
+pub async fn set_supervisor_autostart(enabled: bool) -> Result<()> {
+    if enabled {
+        user_systemctl(&["enable", "--now", SUPERVISOR_SERVICE]).await
+    } else {
+        // Disabling login startup must not interrupt the currently running proxy.
+        user_systemctl(&["disable", SUPERVISOR_SERVICE]).await
+    }
+}
+
+fn migrate_legacy_supervisor_unit() -> Result<bool> {
+    if !Path::new(PACKAGED_SUPERVISOR_UNIT).is_file() {
+        return Ok(false);
+    }
+    let unit_path = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("systemd/user");
-    fs::create_dir_all(&unit_dir)?;
-    let unit_path = unit_dir.join("omash-supervisor.service");
-    let executable = systemd_quote(&executable);
-    let unit = format!(
-        "# BinaryModified={binary_modified}\n[Unit]\nDescription=Omash Mihomo Supervisor\nAfter=network-online.target\n\n[Service]\nType=simple\nExecStart={executable} --daemon\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=default.target\n"
-    );
-    let changed = fs::read_to_string(&unit_path).ok().as_deref() != Some(&unit);
-    if changed {
-        fs::write(&unit_path, unit)?;
-        user_systemctl(&["daemon-reload"]).await?;
+        .join("systemd/user")
+        .join(SUPERVISOR_SERVICE);
+    let Some(unit) = fs::read_to_string(&unit_path).ok() else {
+        return Ok(false);
+    };
+    if unit.starts_with("# BinaryModified=") && unit.contains("Description=Omash Mihomo Supervisor")
+    {
+        fs::remove_file(unit_path)?;
+        return Ok(true);
     }
-    user_systemctl(&["enable", "--now", "omash-supervisor.service"]).await?;
-    if changed {
-        user_systemctl(&["restart", "omash-supervisor.service"]).await?;
-    }
-    Ok(())
+    Ok(false)
 }
 
 pub async fn run_supervisor(mut config: Config) -> Result<()> {
@@ -555,16 +569,6 @@ fn write_supervisor_state(state: &SupervisorState) -> Result<()> {
     fs::write(&temporary, serde_json::to_vec(state)?)?;
     fs::rename(temporary, path)?;
     Ok(())
-}
-
-fn systemd_quote(path: &Path) -> String {
-    format!(
-        "\"{}\"",
-        path.display()
-            .to_string()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-    )
 }
 
 async fn user_systemctl(arguments: &[&str]) -> Result<()> {

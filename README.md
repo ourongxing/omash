@@ -41,6 +41,7 @@ Mihomo 默认由用户级 `omash-supervisor.service` 持久管理。用户无需
 - Linux `gsettings` 与 Omarchy/UWSM systemd 用户环境代理后端；代理启用期间新应用使用 UWSM service，确保 Chrome 继承实时代理
 - 独立 TUI 主题文件；未配置时自动持续同步 Omarchy 配色
 - 可选 Omarchy QML 状态栏组件，支持切换代理模式和 Selector 节点
+- Omarchy 图形登录时通过 systemd 用户服务自动启动；可在设置页启用或关闭
 - Mihomo 日志查看
 - 与 Clash Verge Rev 共用的纯 Rust 流媒体/AI 解锁检测引擎
 - 本地 ZIP 备份及带确认的恢复
@@ -69,7 +70,7 @@ Mihomo 默认由用户级 `omash-supervisor.service` 持久管理。用户无需
 
 - WebDAV 备份同步
 - DNS、端口、网络接口等高级编辑器
-- 系统自启动和特权服务管理
+- 特权服务管理
 
 Clash Verge 的 `.js` Script 增强器不会移植；这是“不使用 JS”的明确边界。相同用途由纯 Rust YAML 增强链承担。
 
@@ -81,12 +82,20 @@ Clash Verge 的 `.js` Script 增强器不会移植；这是“不使用 JS”的
 yay -S mihomo
 ```
 
-构建并运行：
+本地构建并安装：
 
 ```bash
 cargo build --release
-./target/release/omash
+sudo install -Dm755 target/release/omash /usr/bin/omash
+sudo install -Dm644 systemd/omash-supervisor.service \
+  /usr/lib/systemd/user/omash-supervisor.service
+omash
 ```
+
+发行包也需要把这两个文件分别安装到 `/usr/bin/omash` 和
+`/usr/lib/systemd/user/omash-supervisor.service`。首次运行 `omash` 时会根据
+`auto_start` 启用或禁用该用户服务，并立即启动当前会话的 supervisor。关闭
+`Start on login` 只取消下次图形登录时的自动启动，不会中断当前代理。
 
 ## 配置
 
@@ -109,6 +118,10 @@ proxy_bypass = "localhost,127.0.0.1,::1"
 运行数据位于 `~/.local/share/omash/`。Mihomo 固定安装在 `~/.local/share/omash/bin/mihomo` 并由 omash 监管，不支持连接外部内核。`OMASH_REFRESH_MS` 和对应命令行参数优先于配置文件。
 
 配置页面中 `b` 创建备份，`R` 恢复最近备份；恢复前必须确认。选择 `Update Mihomo core` 或 `Update GeoData` 后按 `Enter` 即可更新，也可以使用鼠标双击执行。
+
+`auto_start` 对应设置页的 `Start on login`。启用后，
+`omash-supervisor.service` 随 Omarchy 的 `graphical-session.target` 启动；它是
+登录级自启动，不会通过 systemd lingering 在无人登录时运行。
 
 ## 主题
 

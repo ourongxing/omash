@@ -18,7 +18,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{cmp::min, collections::HashSet, io, path::PathBuf, time::Instant};
 use tokio::time;
 
-pub const SETTINGS_COUNT: usize = 8;
+pub const SETTINGS_COUNT: usize = 9;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
@@ -717,33 +717,54 @@ impl App {
                 }
             }
             1 => {
+                let previous = self.config.auto_start;
+                self.config.auto_start = !previous;
+                if let Err(error) = self.config.save() {
+                    self.config.auto_start = previous;
+                    self.status = format!("Save failed: {error}");
+                    return;
+                }
+                if let Err(error) = core::set_supervisor_autostart(self.config.auto_start).await {
+                    self.config.auto_start = previous;
+                    let rollback = self.config.save().err();
+                    self.status = format!("Autostart change failed: {error}");
+                    if let Some(rollback) = rollback {
+                        self.status
+                            .push_str(&format!("; rollback failed: {rollback}"));
+                    }
+                    return;
+                }
+                self.status = "Autostart setting saved".into();
+                return;
+            }
+            2 => {
                 self.config.tun = !self.config.tun;
                 restart = true;
             }
-            2 => {
+            3 => {
                 self.config.system_proxy = !self.config.system_proxy;
                 restart = true;
             }
-            3 => {
+            4 => {
                 self.config.allow_lan = !self.config.allow_lan;
                 restart = true;
             }
-            4 => {
+            5 => {
                 self.config.ipv6 = !self.config.ipv6;
                 restart = true;
             }
-            5 => {
+            6 => {
                 self.config.refresh_ms = if self.config.refresh_ms >= 5000 {
                     500
                 } else {
                     self.config.refresh_ms + 500
                 };
             }
-            6 => {
+            7 => {
                 self.update_core().await;
                 return;
             }
-            7 => {
+            8 => {
                 self.update_geodata().await;
                 return;
             }
