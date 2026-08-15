@@ -3,7 +3,7 @@
 set -euo pipefail
 
 repository=https://github.com/ourongxing/omash
-install_tag=v0.1.1
+install_tag=v0.1.2
 build_root=$(mktemp -d -t omash-install.XXXXXXXX)
 
 cleanup() {
