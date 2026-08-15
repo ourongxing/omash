@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repository=https://github.com/ourongxing/omash
+build_root=$(mktemp -d -t omash-install.XXXXXXXX)
+
+cleanup() {
+  rm -rf -- "$build_root"
+}
+trap cleanup EXIT
+
+if ! command -v omarchy >/dev/null 2>&1; then
+  echo "omash currently supports Omarchy only." >&2
+  exit 1
+fi
+
+for command in curl tar sudo install systemctl; do
+  if ! command -v "$command" >/dev/null 2>&1; then
+    echo "$command is required to install omash." >&2
+    exit 1
+  fi
+done
+
+omarchy pkg aur add mihomo clash-geoip
+
+if ! command -v cargo >/dev/null 2>&1; then
+  omarchy install dev-env rust
+  # rustup does not update the environment of an already running shell.
+  if [[ -f "$HOME/.cargo/env" ]]; then
+    # shellcheck disable=SC1091
+    source "$HOME/.cargo/env"
+  fi
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "cargo is required to build omash." >&2
+  exit 1
+fi
+
+release_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$repository/releases/latest")
+tag=${release_url##*/}
+if [[ ! $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+  echo "Unable to determine the latest omash release." >&2
+  exit 1
+fi
+
+archive="$build_root/$tag.tar.gz"
+curl -fsSL "$repository/archive/refs/tags/$tag.tar.gz" -o "$archive"
+tar -xzf "$archive" -C "$build_root"
+source_root="$build_root/omash-${tag#v}"
+
+cargo build --locked --release --manifest-path "$source_root/Cargo.toml"
+
+sudo install -Dm755 "$source_root/target/release/omash" /usr/bin/omash
+sudo install -Dm644 "$source_root/systemd/omash-supervisor.service" \
+  /usr/lib/systemd/user/omash-supervisor.service
+sudo install -Dm644 "$source_root/LICENSE" \
+  /usr/share/licenses/omash/LICENSE
+sudo install -Dm644 "$source_root/themes/default.toml" \
+  /usr/share/omash/themes/default.toml
+sudo install -Dm644 \
+  "$source_root/integrations/omarchy/ourongxing.omash/manifest.json" \
+  /usr/share/omash/omarchy/ourongxing.omash/manifest.json
+sudo install -Dm644 \
+  "$source_root/integrations/omarchy/ourongxing.omash/Panel.qml" \
+  /usr/share/omash/omarchy/ourongxing.omash/Panel.qml
+sudo install -Dm644 \
+  "$source_root/integrations/omarchy/ourongxing.omash/README.md" \
+  /usr/share/omash/omarchy/ourongxing.omash/README.md
+
+systemctl --user daemon-reload
+systemctl --user try-restart omash-supervisor.service
+
+echo "Installed omash $tag. Run: omash"

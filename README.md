@@ -40,25 +40,29 @@ so closing `omash` does not stop your proxy.
   change the routing mode, select proxies, and run delay tests without opening
   the TUI.
 
-## Local package dry run
+## Install
 
-With the dependencies from `PKGBUILD` already installed, validate the current
-working tree by building and testing its package:
-
-```bash
-scripts/dry-run
-```
-
-The script snapshots the current working tree into a temporary source archive
-and runs `makepkg` without installing dependencies or the resulting package.
-All source archives, package archives, and work files are removed when it
-exits.
-
-To build the current working tree without packaging:
+On Omarchy, run:
 
 ```bash
-cargo build --release
+curl -fsSL https://raw.githubusercontent.com/ourongxing/omash/main/scripts/install | bash
 ```
+
+The installer adds `mihomo` and `clash-geoip` through Omarchy, installs the Rust
+toolchain when `cargo` is unavailable, builds the latest omash release, and
+installs the binary and user service. Temporary source and build files are
+removed when it exits.
+
+Run the dashboard:
+
+```bash
+omash
+```
+
+On first launch, `omash` creates its configuration, enables the user service
+when `auto_start` is enabled, and starts the supervisor for the current session.
+It also generates a random API secret; you do not need to configure or start
+Mihomo separately.
 
 ## What it does
 
