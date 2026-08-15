@@ -1,6 +1,6 @@
 pkgbase = omash
 	pkgdesc = Terminal dashboard for Mihomo on Omarchy
-	pkgver = 0.1.0
+	pkgver = 0.1.1
 	pkgrel = 1
 	url = https://github.com/ourongxing/omash
 	arch = x86_64
@@ -8,7 +8,7 @@ pkgbase = omash
 	makedepends = cargo
 	depends = mihomo
 	depends = clash-geoip
-	source = omash-0.1.0.tar.gz::https://github.com/ourongxing/omash/archive/refs/tags/v0.1.0.tar.gz
+	source = omash-0.1.1.tar.gz::https://github.com/ourongxing/omash/archive/refs/tags/v0.1.1.tar.gz
 	b2sums = SKIP
 
 pkgname = omash
