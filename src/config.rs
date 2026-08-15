@@ -83,7 +83,6 @@ pub struct Config {
     pub mixed_port: u16,
     pub allow_lan: bool,
     pub ipv6: bool,
-    pub tun: bool,
     pub system_proxy: bool,
     pub proxy_bypass: String,
 }
@@ -99,8 +98,7 @@ impl Default for Config {
             mixed_port: 7897,
             allow_lan: false,
             ipv6: true,
-            tun: false,
-            system_proxy: false,
+            system_proxy: true,
             proxy_bypass: "localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12".into(),
         }
     }
@@ -116,7 +114,9 @@ impl Config {
                 .ok()
                 .and_then(|document| document.as_table().cloned())
                 .is_some_and(|table| {
-                    table.contains_key("manage_core") || table.contains_key("mihomo_path")
+                    table.contains_key("manage_core")
+                        || table.contains_key("mihomo_path")
+                        || table.contains_key("tun")
                 });
             (
                 toml::from_str(&text)
@@ -269,6 +269,7 @@ mod tests {
         assert_eq!(config.secret, "key");
         assert_eq!(config.refresh_ms, 99);
         assert_eq!(config.refresh_interval(), Duration::from_millis(250));
+        assert!(config.system_proxy);
     }
 
     #[test]
@@ -277,7 +278,7 @@ mod tests {
         let path = dir.path().join("config.toml");
         fs::write(
             &path,
-            "manage_core = false\nmihomo_path = '/tmp/mihomo'\nsecret = 'key'\n",
+            "manage_core = false\nmihomo_path = '/tmp/mihomo'\ntun = true\nsecret = 'key'\n",
         )
         .unwrap();
         Config::load(&Cli {
@@ -290,5 +291,6 @@ mod tests {
         let migrated = fs::read_to_string(path).unwrap();
         assert!(!migrated.contains("manage_core"));
         assert!(!migrated.contains("mihomo_path"));
+        assert!(!migrated.contains("tun"));
     }
 }

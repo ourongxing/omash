@@ -992,7 +992,6 @@ fn settings(frame: &mut Frame, app: &App, area: Rect) {
             on_off(crate::core::core_desired_enabled()),
         ),
         ("Start on login", on_off(app.config.auto_start)),
-        ("TUN mode", on_off(app.config.tun)),
         ("System proxy", on_off(app.config.system_proxy)),
         ("Allow LAN", on_off(app.config.allow_lan)),
         ("IPv6", on_off(app.config.ipv6)),

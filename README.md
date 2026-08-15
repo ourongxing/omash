@@ -7,112 +7,58 @@
  ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
 ```
 
-`omash` 是面向 Mihomo 的纯 Rust 终端控制台，以 Ratatui 重现 Clash Verge Rev 的核心管理能力和工作流，不依赖 Node.js、WebView、TypeScript 或 JavaScript 运行时。
+`omash` is a fast, native terminal dashboard for Mihomo, built for
+[Omarchy](https://omarchy.org/). It manages the local Mihomo process, profiles,
+proxies, connections, rules, and logs without a browser runtime.
 
-系统安装的 Mihomo 默认由用户级 `omash-supervisor.service` 持久管理。用户无需配置 API 地址、Secret 或手工启动内核，关闭 TUI 也不会中断代理。
-
-后端行为直接以工作区中的 Clash Verge Rev Rust 实现为基准，不自行猜测 Mihomo 协议。当前对照基线和源码映射见 [`docs/UPSTREAM.md`](docs/UPSTREAM.md)。
-
-## 界面预览
+The TUI is only the control surface. Mihomo runs under a user-level supervisor,
+so closing `omash` does not stop your proxy.
 
 <p align="center">
-  <img src="screenshots/1.jpg" alt="omash 蓝色主题界面" width="49%">
-  <img src="screenshots/2.jpg" alt="omash 橙色主题界面" width="49%">
+  <img src="screenshots/1.jpg" alt="omash with a blue Omarchy theme" width="49%">
+  <img src="screenshots/2.jpg" alt="omash with an orange Omarchy theme" width="49%">
 </p>
 
-> [!TIP]
-> **omash 会自动跟随 Omarchy 主题。** 切换 Omarchy 配色后，运行中的 TUI 会实时同步，无需重启或手动配置。
+## Built for Omarchy
 
-## 当前可用
+- **Uses system packages.** `omash` runs `/usr/bin/mihomo` and reuses the
+  `Country.mmdb` provided by `clash-geoip`. Mihomo and GeoIP updates stay with
+  pacman and `omarchy update`.
+- **Starts with your desktop session.** `omash-supervisor.service` is attached
+  to `graphical-session.target`. It starts Mihomo on login, restarts it after a
+  crash, and keeps it running when the TUI exits. You can toggle login startup
+  from Settings.
+- **Follows the active Omarchy theme.** The TUI reads the current Omarchy color
+  palette and updates live when the theme changes. No restart or theme setup is
+  required.
+- **Handles proxy variables for Omarchy apps.** System Proxy updates both
+  `gsettings` and the UWSM/systemd user environment. Newly launched apps,
+  including Chrome, inherit the current proxy settings.
+- **Includes an Omarchy Shell widget.** The optional Quickshell bar widget can
+  change the routing mode, select proxies, and run delay tests without opening
+  the TUI.
 
-- 系统 Mihomo 启动、停止、API readiness 探测、热重载和配置预检
-- 用户级后台 supervisor、崩溃拉起、配置变化自动重启和随机 API 凭据
-- Dashboard、代理、配置文件、连接、规则、日志与设置页面
-- 代理组按 Mihomo 配置声明顺序浏览、节点切换和节点延迟测试
-- 活跃连接查看、关闭单条或全部连接
-- Rule / Global / Direct 模式切换
-- 远程订阅和本地 YAML 导入、远程更新、切换及删除；导入、更新和切换均先验证再提交
-- 订阅流量信息读取
-- 纯 Rust 配置增强：深度 Merge、prepend/append、Rules、Proxies、Groups
-- TUN、Allow LAN、IPv6 和刷新间隔设置
-- 固定使用 Arch 软件包提供的 `/usr/bin/mihomo`；版本完全交由 pacman/yay 维护
-- 复用 Arch `clash-geoip` 软件包提供的 `Country.mmdb`，不自行维护全局 GeoData
-- Linux `gsettings` 与 Omarchy/UWSM systemd 用户环境代理后端；代理启用期间新应用使用 UWSM service，确保 Chrome 继承实时代理
-- 独立 TUI 主题文件；未配置时自动持续同步 Omarchy 配色
-- 可选 Omarchy QML 状态栏组件，支持切换代理模式和 Selector 节点
-- Omarchy 图形登录时通过 systemd 用户服务自动启动；可在设置页启用或关闭
-- Mihomo 日志查看
-- 本地 ZIP 备份及带确认的恢复
-- 按配置周期自动更新远程订阅，并在当前配置变化后重启内核
-- proxy/rule providers 完全由订阅配置和 Mihomo 自身的更新周期管理
-- TOML、环境变量和 CLI 参数配置
+## Install
 
-## 界面与操作
-
-宽终端使用侧栏布局，较窄的终端会自动切换为顶部导航。底栏只显示当前页面可用的操作，按 `?` 可随时打开完整快捷键说明。
-
-| 按键 | 操作 |
-| --- | --- |
-| `1`–`8` | 直接打开对应页面 |
-| `↑` / `↓`、`j` / `k` | 移动当前选择 |
-| `Tab`、`←` / `→`、`h` / `l` | 在代理组和节点面板间切换 |
-| `Enter` | 执行当前选择 |
-| `r` | 立即刷新 |
-| `?` | 打开或关闭快捷键说明 |
-| `q`、`Ctrl-C` | 退出 TUI，不停止后台代理 |
-
-列表支持鼠标点击和滚轮移动，代理节点、配置文件及设置项支持双击执行。TUI 的 Proxy Groups 保持 `runtime.yaml` 中 `proxy-groups` 的声明顺序，不按名称重新排序；每个组中的节点保持 Mihomo 返回的原始顺序。
-
-## 对等移植进度
-
-仍在移植的 Clash Verge Rev 能力：
-
-- WebDAV 备份同步
-- DNS、端口、网络接口等高级编辑器
-- 特权服务管理
-
-Clash Verge 的 `.js` Script 增强器不会移植；这是“不使用 JS”的明确边界。相同用途由纯 Rust YAML 增强链承担。
-
-## 安装与运行
-
-系统需要 Arch 软件包提供的 Mihomo。安装或更新使用：
+Install Mihomo, then build the package from this repository:
 
 ```bash
 omarchy pkg aur add mihomo
-omarchy update
-```
-
-发布版本可使用仓库中的 `PKGBUILD` 构建安装：
-
-```bash
 makepkg -si
 ```
 
-`PKGBUILD` 通过对应的 `v<版本号>` Git tag 获取源码。发布新版本时需同步更新
-`pkgver`、`pkgrel`，并用发布归档的实际 BLAKE2 校验值替换 `SKIP`。
-`mihomo` 和 `clash-geoip` 都是直接运行时依赖，安装 omash 软件包时会同步安装。
-
-## 发布新版本
-
-安装 [`cargo-release`](https://github.com/crate-ci/cargo-release)：
+Run the dashboard:
 
 ```bash
-cargo install cargo-release --locked
+omash
 ```
 
-在干净且与 `origin/main` 同步的 `main` 分支执行：
+On first launch, `omash` creates its configuration, enables the user service
+when `auto_start` is enabled, and starts the supervisor for the current session.
+It also generates a random API secret; you do not need to configure or start
+Mihomo separately.
 
-```bash
-scripts/release patch
-```
-
-也可将 `patch` 替换为 `minor`、`major` 或明确的版本号。该命令会同步更新
-`Cargo.toml`、`Cargo.lock`、`PKGBUILD` 和 `.SRCINFO`，创建 release commit 与
-`v<版本号>` tag，并将二者推送到 `origin`。tag 推送后由 GitHub Actions 创建
-GitHub Release；它只使用 `cargo-release` 的本地版本更新功能，不会访问或发布到
-crates.io。
-
-本地构建并安装：
+To build without packaging:
 
 ```bash
 cargo build --release
@@ -122,14 +68,78 @@ sudo install -Dm644 systemd/omash-supervisor.service \
 omash
 ```
 
-发行包也需要把这两个文件分别安装到 `/usr/bin/omash` 和
-`/usr/lib/systemd/user/omash-supervisor.service`。首次运行 `omash` 时会根据
-`auto_start` 启用或禁用该用户服务，并立即启动当前会话的 supervisor。关闭
-`Start on login` 只取消下次图形登录时的自动启动，不会中断当前代理。
+## What it does
 
-## 配置
+- Imports local YAML profiles and remote subscriptions
+- Validates profile changes before replacing the running configuration
+- Switches Rule, Global, and Direct modes
+- Selects proxies and runs delay tests
+- Shows and closes active connections
+- Supports Merge, prepend/append, Rules, Proxies, and Groups enhancements in
+  native Rust
+- Controls the system proxy, LAN access, IPv6, and refresh intervals
+- Updates remote subscriptions on schedule
+- Creates and restores local ZIP backups
+- Shows Mihomo logs and package versions
 
-配置文件为 `~/.config/omash/config.toml`：
+The Mihomo management behavior is based on the Rust implementation in Clash
+Verge Rev, adapted to a native TUI and Omarchy's system layout.
+
+## Controls
+
+The layout uses a sidebar in wide terminals and switches to a top navigation bar
+when space is limited. Press `?` at any time to show all shortcuts.
+
+| Key | Action |
+| --- | --- |
+| `1`-`8` | Open a page |
+| `Up` / `Down`, `j` / `k` | Move the selection |
+| `Tab`, `Left` / `Right`, `h` / `l` | Switch between proxy groups and nodes |
+| `Enter` | Run the selected action |
+| `r` | Refresh now |
+| `?` | Toggle shortcut help |
+| `q`, `Ctrl-C` | Exit the TUI without stopping Mihomo |
+
+Mouse clicks, scrolling, and double-click actions are also supported.
+
+## Omarchy Shell widget
+
+Install the included widget from the repository root:
+
+```bash
+mkdir -p ~/.config/omarchy/plugins
+cp -r integrations/omarchy/ourongxing.omash ~/.config/omarchy/plugins/
+omarchy plugin enable ourongxing.omash --section right
+```
+
+The widget appears in the bar immediately through Omarchy Shell's hot reload.
+Its two-column panel lists selector groups on the left and their proxies on the
+right. It preserves the order from your Mihomo profile, shows current
+selections and measured delays, and switches between Rule, Global, and Direct
+modes.
+
+The widget calls `omash bar` and never reads or copies the Mihomo API secret.
+The `omash` binary must be available on the Shell's `PATH`. Its refresh interval
+can be changed from 2 to 60 seconds in the plugin settings.
+
+## Theme overrides
+
+By default, `omash` continuously follows the current Omarchy palette. To use a
+separate TUI theme instead, create `~/.config/omash/theme.toml`:
+
+```bash
+mkdir -p ~/.config/omash
+cp themes/default.toml ~/.config/omash/theme.toml
+```
+
+Theme overrides reload while `omash` is running. Remove the file to follow
+Omarchy again. All colors use `#RRGGBB`; see
+[`themes/default.toml`](themes/default.toml) for the available fields.
+
+## Configuration
+
+The main configuration file is `~/.config/omash/config.toml`. Runtime data,
+profiles, logs, and backups live in `~/.local/share/omash/`.
 
 ```toml
 controller = "http://127.0.0.1:9090"
@@ -140,52 +150,19 @@ auto_start = true
 mixed_port = 7897
 allow_lan = false
 ipv6 = true
-tun = false
-system_proxy = false
-proxy_bypass = "localhost,127.0.0.1,::1"
+system_proxy = true
+proxy_bypass = "localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12"
 ```
 
-运行数据位于 `~/.local/share/omash/`。omash 固定执行系统的
-`/usr/bin/mihomo`，不会复制、下载、替换或升级 Mihomo；核心版本由 Arch
-软件包管理器维护。旧版本 omash 创建的 `~/.local/share/omash/bin/mihomo`
-不再使用，可由用户自行删除。omash 仍独立管理 Mihomo 进程和运行配置，不支持连接外部 API。`OMASH_REFRESH_MS` 和对应命令行参数优先于配置文件。
+`OMASH_REFRESH_MS` and `--refresh-ms` override the configured refresh interval.
+Use `--config <path>` to load a different configuration file.
 
-配置页面中 `b` 创建备份，`R` 恢复最近备份；恢复前必须确认。omash 会将
-`/etc/mihomo/Country.mmdb` 或 `/etc/clash/Country.mmdb` 链接到运行数据目录，
-不下载或更新 `GeoIP.dat`、`GeoSite.dat`、`geoip.metadb` 等全局数据库。Settings
-页面会显示当前运行的 Mihomo 版本、已安装的 `clash-geoip` 版本，以及统一更新
-命令 `omarchy update`。
-
-`auto_start` 对应设置页的 `Start on login`。启用后，
-`omash-supervisor.service` 随 Omarchy 的 `graphical-session.target` 启动；它是
-登录级自启动，不会通过 systemd lingering 在无人登录时运行。
-
-## 主题
-
-在 Omarchy 中，omash **默认自动跟随当前系统主题**。无论 TUI 是否已在运行，切换 Omarchy 配色后都会持续、实时同步，无需重启 omash。
-
-如果需要使用独立配色，omash 也可以读取 `~/.config/omash/theme.toml`。主题支持部分覆盖，未填写的颜色沿用内置默认值。可复制示例开始配置：
+## Development
 
 ```bash
-mkdir -p ~/.config/omash
-cp themes/default.toml ~/.config/omash/theme.toml
+cargo test
+cargo build --release
 ```
-
-独立主题修改后，运行中的 TUI 也会自动重新加载。颜色均使用 `#RRGGBB` 格式，字段含义见 [`themes/default.toml`](themes/default.toml)。创建或安装 `theme.toml` 后，omash 会停止跟随 Omarchy，改用该独立主题；删除它即可恢复自动跟随。
-
-## Omarchy 状态栏
-
-仓库附带一个原生 Quickshell 状态栏组件。点击 omash 图标可以切换 Rule、Global、Direct 模式；Proxy Groups 面板采用紧凑双栏布局，左栏显示代理组及当前选择，右栏显示所选组的节点和已测延迟，并可独立滚动。点击标题右侧的延迟测试按钮会测试当前组的全部节点。
-
-左栏只显示 Selector 类型的代理组，并保持 `runtime.yaml` 中 `proxy-groups` 的声明顺序；右栏节点保持 Mihomo 返回的原始顺序。安装后 Omarchy Shell 会自动热重载：
-
-```bash
-mkdir -p ~/.config/omarchy/plugins
-cp -r integrations/omarchy/ourongxing.omash ~/.config/omarchy/plugins/
-omarchy plugin enable ourongxing.omash --section right
-```
-
-组件通过内部的 `omash bar` 命令调用已有 Rust API 层，因此不会读取或复制 Mihomo API Secret；需要确保 `omash` 已安装在 Omarchy Shell 的 `PATH` 中。组件默认每 5 秒刷新一次，也可在 Omarchy 插件设置中调整为 2–60 秒。
 
 ## License
 

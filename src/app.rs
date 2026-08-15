@@ -17,7 +17,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{cmp::min, collections::HashSet, io, path::PathBuf, process::Command, time::Instant};
 use tokio::time;
 
-pub const SETTINGS_COUNT: usize = 7;
+pub const SETTINGS_COUNT: usize = 6;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
@@ -729,22 +729,18 @@ impl App {
                 return;
             }
             2 => {
-                self.config.tun = !self.config.tun;
-                restart = true;
-            }
-            3 => {
                 self.config.system_proxy = !self.config.system_proxy;
                 restart = true;
             }
-            4 => {
+            3 => {
                 self.config.allow_lan = !self.config.allow_lan;
                 restart = true;
             }
-            5 => {
+            4 => {
                 self.config.ipv6 = !self.config.ipv6;
                 restart = true;
             }
-            6 => {
+            5 => {
                 self.config.refresh_ms = if self.config.refresh_ms >= 5000 {
                     500
                 } else {

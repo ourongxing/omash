@@ -42,7 +42,6 @@ pub fn apply_runtime_defaults(
     mixed_port: u16,
     allow_lan: bool,
     ipv6: bool,
-    tun: bool,
 ) {
     let controller = controller
         .trim_start_matches("http://")
@@ -53,6 +52,7 @@ pub fn apply_runtime_defaults(
     set(config, "mixed-port", mixed_port);
     set(config, "allow-lan", allow_lan);
     set(config, "ipv6", ipv6);
+    config.remove("tun");
     let profile = config
         .entry(Value::String("profile".into()))
         .or_insert_with(|| Value::Mapping(Mapping::new()));
@@ -60,29 +60,6 @@ pub fn apply_runtime_defaults(
         mapping
             .entry(Value::String("store-selected".into()))
             .or_insert(Value::Bool(true));
-    }
-    let tun_map = config
-        .entry(Value::String("tun".into()))
-        .or_insert_with(|| Value::Mapping(Mapping::new()));
-    if let Value::Mapping(mapping) = tun_map {
-        set(mapping, "enable", tun);
-        mapping
-            .entry(Value::String("stack".into()))
-            .or_insert(Value::String("mixed".into()));
-        mapping
-            .entry(Value::String("auto-route".into()))
-            .or_insert(Value::Bool(true));
-        mapping
-            .entry(Value::String("auto-detect-interface".into()))
-            .or_insert(Value::Bool(true));
-        mapping
-            .entry(Value::String("dns-hijack".into()))
-            .or_insert_with(|| {
-                Value::Sequence(vec![
-                    Value::String("any:53".into()),
-                    Value::String("tcp://any:53".into()),
-                ])
-            });
     }
 }
 
@@ -153,7 +130,7 @@ mod tests {
 
     #[test]
     fn runtime_defaults_store_selected_nodes() {
-        let mut config = Mapping::new();
+        let mut config: Mapping = serde_yaml_ng::from_str("tun: {enable: true}\n").unwrap();
         apply_runtime_defaults(
             &mut config,
             "http://127.0.0.1:9090",
@@ -161,8 +138,8 @@ mod tests {
             7897,
             false,
             true,
-            false,
         );
         assert_eq!(config["profile"]["store-selected"], Value::Bool(true));
+        assert!(!config.contains_key("tun"));
     }
 }

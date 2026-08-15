@@ -297,7 +297,6 @@ impl Profiles {
             config.mixed_port,
             config.allow_lan,
             config.ipv6,
-            config.tun,
         );
         atomic_write(destination, serde_yaml_ng::to_string(&runtime)?.as_bytes())?;
         Ok(destination.to_path_buf())
