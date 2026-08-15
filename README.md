@@ -9,7 +9,7 @@
 
 `omash` 是面向 Mihomo 的纯 Rust 终端控制台，以 Ratatui 重现 Clash Verge Rev 的核心管理能力和工作流，不依赖 Node.js、WebView、TypeScript 或 JavaScript 运行时。
 
-Mihomo 默认由用户级 `omash-supervisor.service` 持久管理。用户无需配置 API 地址、Secret 或手工启动内核，关闭 TUI 也不会中断代理。
+系统安装的 Mihomo 默认由用户级 `omash-supervisor.service` 持久管理。用户无需配置 API 地址、Secret 或手工启动内核，关闭 TUI 也不会中断代理。
 
 后端行为直接以工作区中的 Clash Verge Rev Rust 实现为基准，不自行猜测 Mihomo 协议。当前对照基线和源码映射见 [`docs/UPSTREAM.md`](docs/UPSTREAM.md)。
 
@@ -25,27 +25,26 @@ Mihomo 默认由用户级 `omash-supervisor.service` 持久管理。用户无需
 
 ## 当前可用
 
-- Mihomo sidecar 启动、停止、API readiness 探测、热重载和配置预检
+- 系统 Mihomo 启动、停止、API readiness 探测、热重载和配置预检
 - 用户级后台 supervisor、崩溃拉起、配置变化自动重启和随机 API 凭据
-- Dashboard、代理、配置文件、连接、规则、日志、解锁与设置页面
+- Dashboard、代理、配置文件、连接、规则、日志与设置页面
 - 代理组按 Mihomo 配置声明顺序浏览、节点切换和节点延迟测试
-- 代理提供者和规则提供者手动更新
 - 活跃连接查看、关闭单条或全部连接
 - Rule / Global / Direct 模式切换
 - 远程订阅和本地 YAML 导入、远程更新、切换及删除；导入、更新和切换均先验证再提交
 - 订阅流量信息读取
 - 纯 Rust 配置增强：深度 Merge、prepend/append、Rules、Proxies、Groups
 - TUN、Allow LAN、IPv6 和刷新间隔设置
-- Mihomo Release 内核一键更新；yay 安装版仅作首次引导，自动复制为应用拥有的 sidecar，运行时不使用或修改 pacman 文件
-- GeoData 一键更新；优先使用 Mihomo API，网络失败时直连官方发布资源并原子替换
+- 固定使用 Arch 软件包提供的 `/usr/bin/mihomo`；版本完全交由 pacman/yay 维护
+- 复用 Arch `clash-geoip` 软件包提供的 `Country.mmdb`，不自行维护全局 GeoData
 - Linux `gsettings` 与 Omarchy/UWSM systemd 用户环境代理后端；代理启用期间新应用使用 UWSM service，确保 Chrome 继承实时代理
 - 独立 TUI 主题文件；未配置时自动持续同步 Omarchy 配色
 - 可选 Omarchy QML 状态栏组件，支持切换代理模式和 Selector 节点
 - Omarchy 图形登录时通过 systemd 用户服务自动启动；可在设置页启用或关闭
 - Mihomo 日志查看
-- 与 Clash Verge Rev 共用的纯 Rust 流媒体/AI 解锁检测引擎
 - 本地 ZIP 备份及带确认的恢复
 - 按配置周期自动更新远程订阅，并在当前配置变化后重启内核
+- proxy/rule providers 完全由订阅配置和 Mihomo 自身的更新周期管理
 - TOML、环境变量和 CLI 参数配置
 
 ## 界面与操作
@@ -54,7 +53,7 @@ Mihomo 默认由用户级 `omash-supervisor.service` 持久管理。用户无需
 
 | 按键 | 操作 |
 | --- | --- |
-| `1`–`9` | 直接打开对应页面 |
+| `1`–`8` | 直接打开对应页面 |
 | `↑` / `↓`、`j` / `k` | 移动当前选择 |
 | `Tab`、`←` / `→`、`h` / `l` | 在代理组和节点面板间切换 |
 | `Enter` | 执行当前选择 |
@@ -76,11 +75,22 @@ Clash Verge 的 `.js` Script 增强器不会移植；这是“不使用 JS”的
 
 ## 安装与运行
 
-系统需要可用的 Mihomo。Arch/Omarchy 可以安装：
+系统需要 Arch 软件包提供的 Mihomo。安装或更新使用：
 
 ```bash
-yay -S mihomo
+omarchy pkg aur add mihomo
+omarchy update
 ```
+
+发布版本可使用仓库中的 `PKGBUILD` 构建安装：
+
+```bash
+makepkg -si
+```
+
+`PKGBUILD` 通过对应的 `v<版本号>` Git tag 获取源码。发布新版本时需同步更新
+`pkgver`、`pkgrel`，并用发布归档的实际 BLAKE2 校验值替换 `SKIP`。
+`mihomo` 是唯一的直接运行时依赖；它会继续依赖并更新 `clash-geoip`。
 
 本地构建并安装：
 
@@ -115,9 +125,16 @@ system_proxy = false
 proxy_bypass = "localhost,127.0.0.1,::1"
 ```
 
-运行数据位于 `~/.local/share/omash/`。Mihomo 固定安装在 `~/.local/share/omash/bin/mihomo` 并由 omash 监管，不支持连接外部内核。`OMASH_REFRESH_MS` 和对应命令行参数优先于配置文件。
+运行数据位于 `~/.local/share/omash/`。omash 固定执行系统的
+`/usr/bin/mihomo`，不会复制、下载、替换或升级 Mihomo；核心版本由 Arch
+软件包管理器维护。旧版本 omash 创建的 `~/.local/share/omash/bin/mihomo`
+不再使用，可由用户自行删除。omash 仍独立管理 Mihomo 进程和运行配置，不支持连接外部 API。`OMASH_REFRESH_MS` 和对应命令行参数优先于配置文件。
 
-配置页面中 `b` 创建备份，`R` 恢复最近备份；恢复前必须确认。选择 `Update Mihomo core` 或 `Update GeoData` 后按 `Enter` 即可更新，也可以使用鼠标双击执行。
+配置页面中 `b` 创建备份，`R` 恢复最近备份；恢复前必须确认。omash 会将
+`/etc/mihomo/Country.mmdb` 或 `/etc/clash/Country.mmdb` 链接到运行数据目录，
+不下载或更新 `GeoIP.dat`、`GeoSite.dat`、`geoip.metadb` 等全局数据库。Settings
+页面会显示当前运行的 Mihomo 版本、已安装的 `clash-geoip` 版本，以及统一更新
+命令 `omarchy update`。
 
 `auto_start` 对应设置页的 `Start on login`。启用后，
 `omash-supervisor.service` 随 Omarchy 的 `graphical-session.target` 启动；它是

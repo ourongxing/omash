@@ -159,7 +159,7 @@ impl Config {
     }
 
     pub fn mihomo_path() -> PathBuf {
-        Self::data_dir().join("bin/mihomo")
+        PathBuf::from("/usr/bin/mihomo")
     }
 
     pub fn profiles_dir() -> PathBuf {
@@ -202,10 +202,6 @@ impl Config {
 
     pub fn restart_request_path() -> PathBuf {
         Self::data_dir().join("restart-request")
-    }
-
-    pub fn replace_request_path() -> PathBuf {
-        Self::data_dir().join("replace-request")
     }
 
     pub fn supervisor_state_path() -> PathBuf {

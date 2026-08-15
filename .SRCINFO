@@ -1,0 +1,13 @@
+pkgbase = omash
+	pkgdesc = Terminal dashboard for Mihomo on Omarchy
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/ourongxing/omash
+	arch = x86_64
+	license = GPL-3.0-only
+	makedepends = cargo
+	depends = mihomo
+	source = omash-0.1.0.tar.gz::https://github.com/ourongxing/omash/archive/refs/tags/v0.1.0.tar.gz
+	b2sums = SKIP
+
+pkgname = omash

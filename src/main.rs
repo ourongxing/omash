@@ -9,7 +9,6 @@ mod profiles;
 mod statusbar;
 mod theme;
 mod ui;
-mod updater;
 
 use anyhow::Result;
 use app::App;
@@ -30,7 +29,7 @@ async fn main() -> Result<()> {
     if let Some(Command::Bar(args)) = &cli.command {
         return statusbar::run(&config, &args.command).await;
     }
-    core::ensure_managed_core().await?;
+    core::ensure_system_core()?;
     if cli.daemon {
         return core::run_supervisor(config).await;
     }

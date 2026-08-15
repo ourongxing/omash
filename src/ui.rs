@@ -60,7 +60,6 @@ pub fn draw(frame: &mut Frame, app: &App) -> Vec<HitRegion> {
         Tab::Connections => connections(frame, app, shell.content),
         Tab::Rules => rules(frame, app, shell.content),
         Tab::Logs => logs(frame, app, shell.content),
-        Tab::Unlock => unlock(frame, app, shell.content),
         Tab::Settings => settings(frame, app, shell.content),
         Tab::Help => help(frame, app, shell.content),
     }
@@ -174,13 +173,16 @@ fn hit_regions(app: &App, shell: ShellAreas) -> Vec<HitRegion> {
             true,
             HitTarget::Rule,
         )),
-        Tab::Settings => regions.extend(list_regions(
-            shell.content,
-            crate::app::SETTINGS_COUNT,
-            app.setting_index,
-            false,
-            HitTarget::Setting,
-        )),
+        Tab::Settings => {
+            let [settings, _] = settings_areas(shell.content);
+            regions.extend(list_regions(
+                settings,
+                crate::app::SETTINGS_COUNT,
+                app.setting_index,
+                false,
+                HitTarget::Setting,
+            ));
+        }
         _ => {}
     }
     regions
@@ -380,8 +382,7 @@ fn draw_page_header(frame: &mut Frame, app: &App, area: Rect) {
         Tab::Profiles => "Manage local and remote configuration profiles",
         Tab::Connections => "Inspect and close active network sessions",
         Tab::Rules => "Review the policies currently loaded by Mihomo",
-        Tab::Logs => "Recent runtime output from the managed core",
-        Tab::Unlock => "Check regional availability for media and AI services",
+        Tab::Logs => "Recent runtime output from the system Mihomo core",
         Tab::Settings => "Core behavior, networking and application maintenance",
         Tab::Help => "Keyboard and mouse shortcuts",
     };
@@ -414,7 +415,6 @@ fn short_title(tab: Tab) -> &'static str {
         Tab::Connections => "Conns",
         Tab::Rules => "Rules",
         Tab::Logs => "Logs",
-        Tab::Unlock => "Unlock",
         Tab::Settings => "Settings",
         Tab::Help => "Help",
     }
@@ -984,40 +984,8 @@ fn logs(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn unlock(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = app.unlock_items.iter().map(|item| {
-        Row::new([
-            item.name.as_str(),
-            item.status.as_str(),
-            item.region.as_deref().unwrap_or("—"),
-            item.check_time.as_deref().unwrap_or("—"),
-        ])
-    });
-    frame.render_widget(
-        Table::new(
-            rows,
-            [
-                Constraint::Percentage(30),
-                Constraint::Percentage(30),
-                Constraint::Length(12),
-                Constraint::Percentage(25),
-            ],
-        )
-        .header(
-            Row::new(["Service", "Status", "Region", "Checked"])
-                .style(
-                    Style::default()
-                        .fg(app.theme.muted)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .bottom_margin(1),
-        )
-        .block(panel(" Media & AI unlock ", &app.theme)),
-        area,
-    );
-}
-
 fn settings(frame: &mut Frame, app: &App, area: Rect) {
+    let [settings_area, updates_area] = settings_areas(area);
     let values = [
         (
             "Keep Mihomo running",
@@ -1029,11 +997,6 @@ fn settings(frame: &mut Frame, app: &App, area: Rect) {
         ("Allow LAN", on_off(app.config.allow_lan)),
         ("IPv6", on_off(app.config.ipv6)),
         ("Refresh interval", format!("{} ms", app.config.refresh_ms)),
-        (
-            "Update Mihomo core",
-            format!("{} · Enter", value_or_dash(&app.snapshot.version.version)),
-        ),
-        ("Update GeoData", "Enter".into()),
     ];
     let items: Vec<_> = values
         .into_iter()
@@ -1050,9 +1013,43 @@ fn settings(frame: &mut Frame, app: &App, area: Rect) {
             .highlight_symbol("▎ ")
             .highlight_style(selection_style(true, &app.theme))
             .block(panel(" Settings ", &app.theme)),
-        area,
+        settings_area,
         &mut state,
     );
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled("Mihomo  ", Style::default().fg(app.theme.muted)),
+                Span::styled(
+                    value_or_dash(&app.snapshot.version.version),
+                    Style::default().fg(app.theme.foreground),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Country.mmdb  ", Style::default().fg(app.theme.muted)),
+                Span::styled(
+                    &app.geoip_version,
+                    Style::default().fg(app.theme.foreground),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("Update  ", Style::default().fg(app.theme.muted)),
+                Span::styled(
+                    "omarchy update",
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+        ])
+        .block(panel(" Updates (managed by Arch) ", &app.theme)),
+        updates_area,
+    );
+}
+
+fn settings_areas(area: Rect) -> [Rect; 2] {
+    let areas = Layout::vertical([Constraint::Min(5), Constraint::Length(5)]).split(area);
+    [areas[0], areas[1]]
 }
 
 fn help(frame: &mut Frame, app: &App, area: Rect) {
@@ -1076,7 +1073,7 @@ fn render_help_columns(frame: &mut Frame, area: Rect, theme: &Theme) {
     let columns = Layout::horizontal([Constraint::Ratio(1, 2); 2]).split(area);
     let navigation = vec![
         section_line("NAVIGATION", theme),
-        help_binding("1–9", "Open page", theme),
+        help_binding("1–8", "Open page", theme),
         help_binding("↑↓ / jk", "Move selection", theme),
         help_binding("Tab", "Switch proxy pane", theme),
         help_binding("←→ / hl", "Switch proxy pane", theme),
@@ -1099,7 +1096,6 @@ fn render_help_columns(frame: &mut Frame, area: Rect, theme: &Theme) {
         help_binding("D", "Delete profile", theme),
         help_binding("x / X", "Close one / all connections", theme),
         help_binding("p", "Update providers", theme),
-        help_binding("c", "Run unlock checks", theme),
         help_binding("b / R", "Backup / restore", theme),
         Line::from(""),
         section_line("MOUSE", theme),
@@ -1244,13 +1240,10 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect, wide: bool) {
 fn contextual_hints(app: &App) -> &'static [(&'static str, &'static str)] {
     match app.tab {
         Tab::Dashboard => &[("s", "Core"), ("m", "Mode")],
-        Tab::Proxies if app.selected_group_is_manual() => &[
-            ("Tab", "Pane"),
-            ("Enter", "Select"),
-            ("d", "Delay"),
-            ("p", "Update"),
-        ],
-        Tab::Proxies => &[("Tab", "Pane"), ("d", "Delay"), ("p", "Update")],
+        Tab::Proxies if app.selected_group_is_manual() => {
+            &[("Tab", "Pane"), ("Enter", "Select"), ("d", "Delay")]
+        }
+        Tab::Proxies => &[("Tab", "Pane"), ("d", "Delay")],
         Tab::Profiles => &[
             ("Enter", "Activate"),
             ("a", "Import"),
@@ -1258,9 +1251,8 @@ fn contextual_hints(app: &App) -> &'static [(&'static str, &'static str)] {
             ("D", "Delete"),
         ],
         Tab::Connections => &[("x", "Close"), ("X", "Close all")],
-        Tab::Rules => &[("p", "Update")],
+        Tab::Rules => &[],
         Tab::Logs => &[("r", "Refresh")],
-        Tab::Unlock => &[("c", "Check")],
         Tab::Settings => &[("Enter", "Change"), ("b", "Backup"), ("R", "Restore")],
         Tab::Help => &[],
     }

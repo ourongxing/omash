@@ -11,9 +11,9 @@ use std::{
 use tokio::process::{Child, Command};
 
 const VALIDATION_TIMEOUT: Duration = Duration::from_secs(30);
-const SIDECAR_READINESS_ATTEMPTS: usize = 30;
-const SIDECAR_READINESS_INTERVAL: Duration = Duration::from_millis(100);
-const SIDECAR_READINESS_PROBE_TIMEOUT: Duration = Duration::from_millis(400);
+const CORE_READINESS_ATTEMPTS: usize = 30;
+const CORE_READINESS_INTERVAL: Duration = Duration::from_millis(100);
+const CORE_READINESS_PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 const START_RETRY_BACKOFF: Duration = Duration::from_secs(5);
 
 pub enum ConfigApply {
@@ -23,15 +23,11 @@ pub enum ConfigApply {
 
 pub struct CoreManager {
     child: Option<Child>,
-    child_path: Option<PathBuf>,
 }
 
 impl CoreManager {
     pub const fn new() -> Self {
-        Self {
-            child: None,
-            child_path: None,
-        }
+        Self { child: None }
     }
 
     pub async fn validate(&self, config: &Config, profiles: &Profiles) -> Result<()> {
@@ -92,7 +88,7 @@ impl CoreManager {
     }
 
     pub async fn start(&mut self, config: &Config, profiles: &Profiles) -> Result<()> {
-        if self.is_sidecar_running() {
+        if self.is_running() {
             return Ok(());
         }
         self.validate(config, profiles).await?;
@@ -122,14 +118,14 @@ impl CoreManager {
         let api = MihomoClient::new(&config.controller, config.secret.clone())?;
         let mut last_error = "Mihomo API did not answer".to_owned();
         let mut ready = false;
-        for attempt in 0..SIDECAR_READINESS_ATTEMPTS {
+        for attempt in 0..CORE_READINESS_ATTEMPTS {
             if let Some(status) = child.try_wait()? {
                 bail!(
                     "Mihomo exited during startup with {status}; see {}",
                     log_path.display()
                 );
             }
-            match tokio::time::timeout(SIDECAR_READINESS_PROBE_TIMEOUT, api.version()).await {
+            match tokio::time::timeout(CORE_READINESS_PROBE_TIMEOUT, api.version()).await {
                 Ok(Ok(_)) => {
                     ready = true;
                     break;
@@ -137,8 +133,8 @@ impl CoreManager {
                 Ok(Err(error)) => last_error = error.to_string(),
                 Err(_) => last_error = "readiness probe timed out".into(),
             }
-            if attempt + 1 < SIDECAR_READINESS_ATTEMPTS {
-                tokio::time::sleep(SIDECAR_READINESS_INTERVAL).await;
+            if attempt + 1 < CORE_READINESS_ATTEMPTS {
+                tokio::time::sleep(CORE_READINESS_INTERVAL).await;
             }
         }
         if !ready {
@@ -150,7 +146,6 @@ impl CoreManager {
             );
         }
         self.child = Some(child);
-        self.child_path = Some(Config::mihomo_path());
         let _ = restore_selected_nodes(config, profiles).await;
         Ok(())
     }
@@ -160,17 +155,11 @@ impl CoreManager {
             child.start_kill()?;
             let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await;
         }
-        self.child_path = None;
         Ok(())
     }
 
     pub async fn restart(&mut self, config: &Config, profiles: &Profiles) -> Result<ConfigApply> {
         self.validate(config, profiles).await?;
-        if self.child_path.as_ref() != Some(&Config::mihomo_path()) {
-            self.stop().await?;
-            self.start_validated(config, profiles).await?;
-            return Ok(ConfigApply::Restarted);
-        }
         let api = MihomoClient::new(&config.controller, config.secret.clone())?;
         if api.reload_config(&Config::runtime_path()).await.is_ok() {
             let _ = restore_selected_nodes(config, profiles).await;
@@ -181,7 +170,7 @@ impl CoreManager {
         Ok(ConfigApply::Restarted)
     }
 
-    pub fn is_sidecar_running(&mut self) -> bool {
+    pub fn is_running(&mut self) -> bool {
         self.child
             .as_mut()
             .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
@@ -207,51 +196,15 @@ impl CoreManager {
     }
 }
 
-pub async fn ensure_managed_core() -> Result<bool> {
-    let destination = Config::mihomo_path();
-    if destination.is_file() {
-        return Ok(false);
-    }
-    let source = resolve_executable(Path::new("mihomo")).context(
-        "cannot find Mihomo for first-time installation; install the mihomo package first",
-    )?;
-    let parent = destination
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("managed core path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let staged = parent.join(format!("mihomo.pending-{}", std::process::id()));
-    fs::copy(&source, &staged)
-        .with_context(|| format!("failed to stage managed Mihomo from {}", source.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))?;
-    }
-    let output = Command::new(&staged)
-        .arg("-v")
-        .output()
-        .await
-        .context("failed to validate managed Mihomo executable")?;
-    if !output.status.success() {
-        let _ = fs::remove_file(&staged);
+pub fn ensure_system_core() -> Result<()> {
+    let path = Config::mihomo_path();
+    if !path.is_file() {
         bail!(
-            "managed Mihomo validation failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            "system Mihomo not found at {}; install the Arch mihomo package",
+            path.display()
         );
     }
-    fs::rename(&staged, &destination)?;
-    Ok(true)
-}
-
-fn resolve_executable(command: &Path) -> Option<PathBuf> {
-    if command.components().count() > 1 {
-        return command.is_file().then(|| command.to_path_buf());
-    }
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|directory| directory.join(command))
-            .find(|candidate| candidate.is_file())
-    })
+    Ok(())
 }
 
 async fn restore_selected_nodes(config: &Config, profiles: &Profiles) -> Result<()> {
@@ -273,36 +226,22 @@ async fn restore_selected_nodes(config: &Config, profiles: &Profiles) -> Result<
 }
 
 fn ensure_core_resources() -> Result<()> {
-    let data_dir = Config::data_dir();
-    let search_dirs = [
-        PathBuf::from("/etc/mihomo"),
-        PathBuf::from("/etc/clash"),
-        PathBuf::from("/usr/share/mihomo"),
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("mihomo"),
-    ];
-    for name in ["Country.mmdb", "GeoSite.dat", "GeoIP.dat", "geoip.metadb"] {
-        let destination = data_dir.join(name);
-        if destination.exists() {
-            continue;
-        }
-        let Some(source) = search_dirs
-            .iter()
-            .map(|directory| directory.join(name))
-            .find(|path| path.is_file())
-        else {
-            continue;
-        };
-        link_or_copy(&source, &destination).with_context(|| {
-            format!(
-                "failed to install Mihomo resource {} from {}",
-                destination.display(),
-                source.display()
-            )
-        })?;
+    let destination = Config::data_dir().join("Country.mmdb");
+    if destination.exists() {
+        return Ok(());
     }
-    Ok(())
+    let source = ["/etc/mihomo/Country.mmdb", "/etc/clash/Country.mmdb"]
+        .into_iter()
+        .map(Path::new)
+        .find(|path| path.is_file())
+        .context("system Country.mmdb not found; install the Arch clash-geoip package")?;
+    link_or_copy(source, &destination).with_context(|| {
+        format!(
+            "failed to link system Country.mmdb from {} to {}",
+            source.display(),
+            destination.display()
+        )
+    })
 }
 
 #[cfg(unix)]
@@ -381,14 +320,13 @@ pub async fn run_supervisor(mut config: Config) -> Result<()> {
         let profiles = Profiles::load().unwrap_or_default();
         let current_fingerprint = configuration_fingerprint();
         let restart_requested = Config::restart_request_path().exists();
-        let replace_requested = Config::replace_request_path().exists();
 
         if !enabled || profiles.items.is_empty() {
             if proxy_applied {
                 let _ = apply_system_proxy(&config, false).await;
                 proxy_applied = false;
             }
-            if manager.is_sidecar_running() {
+            if manager.is_running() {
                 manager.stop().await?;
             }
             state.running = false;
@@ -397,7 +335,7 @@ pub async fn run_supervisor(mut config: Config) -> Result<()> {
                 .items
                 .is_empty()
                 .then(|| "waiting for a profile".into());
-        } else if !manager.is_sidecar_running() {
+        } else if !manager.is_running() {
             let retry_due =
                 last_start_attempt.is_none_or(|attempt| attempt.elapsed() >= START_RETRY_BACKOFF);
             if retry_due {
@@ -428,24 +366,12 @@ pub async fn run_supervisor(mut config: Config) -> Result<()> {
                     Err(error) => state.error = Some(error.to_string()),
                 }
             }
-        } else if fingerprint != 0
-            && (fingerprint != current_fingerprint || restart_requested || replace_requested)
-        {
+        } else if fingerprint != 0 && (fingerprint != current_fingerprint || restart_requested) {
             if proxy_applied {
                 let _ = apply_system_proxy(&config, false).await;
                 proxy_applied = false;
             }
-            let result = if replace_requested {
-                async {
-                    manager.validate(&config, &profiles).await?;
-                    manager.stop().await?;
-                    manager.start_validated(&config, &profiles).await?;
-                    Ok(ConfigApply::Restarted)
-                }
-                .await
-            } else {
-                manager.restart(&config, &profiles).await
-            };
+            let result = manager.restart(&config, &profiles).await;
             match result {
                 Ok(outcome) => {
                     match outcome {
@@ -472,10 +398,7 @@ pub async fn run_supervisor(mut config: Config) -> Result<()> {
         if restart_requested {
             let _ = fs::remove_file(Config::restart_request_path());
         }
-        if replace_requested {
-            let _ = fs::remove_file(Config::replace_request_path());
-        }
-        state.running = manager.is_sidecar_running();
+        state.running = manager.is_running();
         state.pid = manager.pid();
         write_supervisor_state(&state)?;
         fingerprint = current_fingerprint;
@@ -522,14 +445,6 @@ pub fn core_desired_enabled() -> bool {
 pub fn request_restart() -> Result<()> {
     fs::write(
         Config::restart_request_path(),
-        format!("{}\n", Local::now().timestamp()),
-    )?;
-    Ok(())
-}
-
-pub fn request_replace() -> Result<()> {
-    fs::write(
-        Config::replace_request_path(),
         format!("{}\n", Local::now().timestamp()),
     )?;
     Ok(())

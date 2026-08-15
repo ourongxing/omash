@@ -5,20 +5,19 @@ use crate::{
     core::{self, SupervisorState},
     profiles::Profiles,
     theme::Theme,
-    ui, updater,
+    ui,
 };
 use anyhow::Result;
-use clash_verge_media_unlock::UnlockItem;
 use crossterm::event::{
     Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
 };
 use futures_util::StreamExt;
 use ratatui::{Terminal, backend::CrosstermBackend};
-use std::{cmp::min, collections::HashSet, io, path::PathBuf, time::Instant};
+use std::{cmp::min, collections::HashSet, io, path::PathBuf, process::Command, time::Instant};
 use tokio::time;
 
-pub const SETTINGS_COUNT: usize = 9;
+pub const SETTINGS_COUNT: usize = 7;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
@@ -29,20 +28,18 @@ pub enum Tab {
     Connections,
     Rules,
     Logs,
-    Unlock,
     Settings,
     Help,
 }
 
 impl Tab {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 8] = [
         Self::Dashboard,
         Self::Proxies,
         Self::Profiles,
         Self::Connections,
         Self::Rules,
         Self::Logs,
-        Self::Unlock,
         Self::Settings,
         Self::Help,
     ];
@@ -54,7 +51,6 @@ impl Tab {
             Self::Connections => "Connections",
             Self::Rules => "Rules",
             Self::Logs => "Logs",
-            Self::Unlock => "Unlock",
             Self::Settings => "Settings",
             Self::Help => "Help",
         }
@@ -70,7 +66,7 @@ pub struct App {
     pub theme: Theme,
     pub supervisor: SupervisorState,
     pub logs: Vec<String>,
-    pub unlock_items: Vec<UnlockItem>,
+    pub geoip_version: String,
     pub tab: Tab,
     pub group_index: usize,
     pub node_index: usize,
@@ -111,7 +107,7 @@ impl App {
             theme: Theme::load(),
             supervisor: core::supervisor_state(),
             logs: vec![],
-            unlock_items: clash_verge_media_unlock::default_unlock_items(),
+            geoip_version: installed_package_version("clash-geoip"),
             tab: Tab::default(),
             group_index: 0,
             node_index: 0,
@@ -281,13 +277,9 @@ impl App {
             }
             KeyCode::Char('u') if self.tab == Tab::Profiles => self.update_profile().await,
             KeyCode::Char('D') if self.tab == Tab::Profiles => self.delete_profile().await,
-            KeyCode::Char('c') if self.tab == Tab::Unlock => self.check_unlock().await,
             KeyCode::Char('x') if self.tab == Tab::Connections => self.close_selected().await,
             KeyCode::Char('X') if self.tab == Tab::Connections => self.close_all().await,
             KeyCode::Char('d') if self.tab == Tab::Proxies => self.delay_selected().await,
-            KeyCode::Char('p') if matches!(self.tab, Tab::Proxies | Tab::Rules) => {
-                self.update_providers().await
-            }
             KeyCode::Enter if self.tab == Tab::Proxies => self.select_node().await,
             KeyCode::Enter if self.tab == Tab::Profiles => self.select_profile().await,
             KeyCode::Enter if self.tab == Tab::Settings => self.toggle_setting().await,
@@ -339,9 +331,8 @@ impl App {
             KeyCode::Char('4') => Some(Tab::Connections),
             KeyCode::Char('5') => Some(Tab::Rules),
             KeyCode::Char('6') => Some(Tab::Logs),
-            KeyCode::Char('7') => Some(Tab::Unlock),
-            KeyCode::Char('8') => Some(Tab::Settings),
-            KeyCode::Char('9') => Some(Tab::Help),
+            KeyCode::Char('7') => Some(Tab::Settings),
+            KeyCode::Char('8') => Some(Tab::Help),
             _ => None,
         }
     }
@@ -760,14 +751,6 @@ impl App {
                     self.config.refresh_ms + 500
                 };
             }
-            7 => {
-                self.update_core().await;
-                return;
-            }
-            8 => {
-                self.update_geodata().await;
-                return;
-            }
             _ => {}
         }
         if let Err(error) = self.config.save() {
@@ -779,53 +762,6 @@ impl App {
             return;
         }
         self.status = "Setting saved".into();
-    }
-
-    async fn update_core(&mut self) {
-        let before = self.snapshot.version.version.clone();
-        self.status = format!("Updating Mihomo from {before}…");
-        let outcome = match self.api.upgrade_core().await {
-            Ok(()) => {
-                time::sleep(std::time::Duration::from_millis(500)).await;
-                match self.api.version().await {
-                    Ok(version) => format!("Mihomo updated: {before} → {}", version.version),
-                    Err(_) => "Mihomo updated; supervisor is restarting it".into(),
-                }
-            }
-            Err(error) if error.to_string().contains("already using latest version") => {
-                format!("Mihomo {before} is already the latest release")
-            }
-            Err(api_error) => match updater::update_core(&before).await {
-                Ok(updater::CoreUpdate::AlreadyLatest(version)) => {
-                    format!("Mihomo {version} is already latest (API updater: {api_error})")
-                }
-                Ok(updater::CoreUpdate::Installed(version)) => {
-                    format!("Mihomo {version} installed; supervisor restart requested")
-                }
-                Err(error) => {
-                    format!("Mihomo update failed: API: {api_error}; direct fallback: {error}")
-                }
-            },
-        };
-        self.refresh().await;
-        self.status = outcome;
-    }
-
-    async fn update_geodata(&mut self) {
-        self.status = "Updating GeoData through Mihomo…".into();
-        match self.api.update_geo().await {
-            Ok(()) => self.status = "GeoData updated".into(),
-            Err(api_error) => match updater::update_geodata().await {
-                Ok(()) => {
-                    self.status =
-                        format!("GeoData downloaded; restart requested (API fallback: {api_error})")
-                }
-                Err(error) => {
-                    self.status =
-                        format!("GeoData update failed: API: {api_error}; fallback: {error}")
-                }
-            },
-        }
     }
 
     fn create_backup(&mut self) {
@@ -842,26 +778,19 @@ impl App {
             Err(error) => self.status = format!("Cannot list backups: {error}"),
         }
     }
+}
 
-    async fn check_unlock(&mut self) {
-        self.status = "Checking media unlock…".into();
-        match clash_verge_media_unlock::check_media_unlock().await {
-            Ok(items) => {
-                self.unlock_items = items;
-                self.status = "Media unlock check completed".into();
-            }
-            Err(error) => self.status = format!("Unlock check failed: {error}"),
-        }
-    }
-
-    async fn update_providers(&mut self) {
-        self.status = "Updating providers…".into();
-        match self.api.update_all_providers().await {
-            Ok(count) => {
-                self.status = format!("Updated {count} providers");
-                self.refresh().await;
-            }
-            Err(error) => self.status = format!("Provider update failed: {error}"),
-        }
-    }
+fn installed_package_version(name: &str) -> String {
+    Command::new("pacman")
+        .args(["-Q", name])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|line| {
+            line.split_once(' ')
+                .map(|(_, version)| version.trim().to_owned())
+        })
+        .filter(|version| !version.is_empty())
+        .unwrap_or_else(|| "not installed".into())
 }

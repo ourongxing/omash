@@ -146,7 +146,7 @@ impl MihomoClient {
             .context("controller must be a valid HTTP URL")?;
         Ok(Self {
             client: Client::builder()
-                // The controller is an application-owned local sidecar.  In
+                // The controller belongs to the local Mihomo process managed by omash. In
                 // particular, never inherit HTTP_PROXY/ALL_PROXY here: doing
                 // so sends 127.0.0.1 requests to an upstream proxy and turns
                 // an otherwise healthy Mihomo into an apparent 502.
@@ -314,61 +314,9 @@ impl MihomoClient {
         Ok(())
     }
 
-    pub async fn update_geo(&self) -> Result<()> {
-        self.long_running_post(&["configs", "geo"], &[]).await
-    }
-
-    pub async fn upgrade_core(&self) -> Result<()> {
-        self.long_running_post(&["upgrade"], &[("channel", "release"), ("force", "false")])
-            .await
-    }
-
-    async fn long_running_post(&self, segments: &[&str], query: &[(&str, &str)]) -> Result<()> {
-        let mut url = self.url(segments)?;
-        url.query_pairs_mut().extend_pairs(query.iter().copied());
-        let mut request = self.client.post(url).timeout(Duration::from_secs(60));
-        if !self.secret.is_empty() {
-            request = request.bearer_auth(&self.secret);
-        }
-        let response = request
-            .send()
-            .await
-            .context("Mihomo update request failed")?;
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let message = serde_json::from_str::<Value>(&body)
-                .ok()
-                .and_then(|value| value.get("message")?.as_str().map(str::to_owned))
-                .unwrap_or(body);
-            bail!("Mihomo update failed ({status}): {message}");
-        }
-        Ok(())
-    }
-
     pub async fn close_connection(&self, id: Option<&str>) -> Result<()> {
         let path = id.map_or_else(|| vec!["connections"], |id| vec!["connections", id]);
         self.empty(Method::DELETE, &path, None).await
-    }
-
-    pub async fn update_all_providers(&self) -> Result<usize> {
-        let mut updated = 0;
-        for kind in ["proxies", "rules"] {
-            let response: Value = self
-                .request(Method::GET, &["providers", kind], None)
-                .await?;
-            let names: Vec<_> = response
-                .get("providers")
-                .and_then(Value::as_object)
-                .map(|providers| providers.keys().cloned().collect())
-                .unwrap_or_default();
-            for name in names {
-                self.empty(Method::PUT, &["providers", kind, &name], None)
-                    .await?;
-                updated += 1;
-            }
-        }
-        Ok(updated)
     }
 }
 

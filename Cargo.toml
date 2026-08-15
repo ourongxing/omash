@@ -4,16 +4,16 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-only"
 description = "A fast terminal dashboard for Mihomo/Clash"
+homepage = "https://github.com/ourongxing/omash"
+repository = "https://github.com/ourongxing/omash"
 
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
-clash-verge-media-unlock = { path = "../clash-verge-rev/crates/clash-verge-media-unlock" }
 clap = { version = "4", features = ["derive", "env"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
 dirs = "6"
 futures-util = "0.3"
-flate2 = "1"
 ratatui = "0.30"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "gzip"] }
 serde = { version = "1", features = ["derive"] }
