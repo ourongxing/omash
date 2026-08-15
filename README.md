@@ -46,8 +46,12 @@ Install Mihomo, then build the package from this repository:
 
 ```bash
 omarchy pkg aur add mihomo
-makepkg -si
+scripts/install
 ```
+
+The install script builds through `makepkg` in a temporary directory and
+removes downloaded source archives, package archives, and work files when it
+exits.
 
 Run the dashboard:
 
