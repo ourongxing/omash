@@ -3,6 +3,7 @@
 set -euo pipefail
 
 repository=https://github.com/ourongxing/omash
+install_tag=v0.1.1
 build_root=$(mktemp -d -t omash-install.XXXXXXXX)
 
 cleanup() {
@@ -38,17 +39,15 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
-release_url=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$repository/releases/latest")
-tag=${release_url##*/}
-if [[ ! $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
-  echo "Unable to determine the latest omash release." >&2
+if [[ ! $install_tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+  echo "Invalid omash install tag: $install_tag" >&2
   exit 1
 fi
 
-archive="$build_root/$tag.tar.gz"
-curl -fsSL "$repository/archive/refs/tags/$tag.tar.gz" -o "$archive"
+archive="$build_root/$install_tag.tar.gz"
+curl -fsSL "$repository/archive/refs/tags/$install_tag.tar.gz" -o "$archive"
 tar -xzf "$archive" -C "$build_root"
-source_root="$build_root/omash-${tag#v}"
+source_root="$build_root/omash-${install_tag#v}"
 
 cargo build --locked --release --manifest-path "$source_root/Cargo.toml"
 
@@ -72,4 +71,4 @@ sudo install -Dm644 \
 systemctl --user daemon-reload
 systemctl --user try-restart omash-supervisor.service
 
-echo "Installed omash $tag. Run: omash"
+echo "Installed omash $install_tag. Run: omash"

@@ -51,6 +51,7 @@ fi
 
 sed -i "s/^pkgver=.*/pkgver=$version/" PKGBUILD
 sed -i 's/^pkgrel=.*/pkgrel=1/' PKGBUILD
+sed -i "s/^install_tag=.*/install_tag=v$version/" scripts/install
 
 srcinfo_tmp=$(mktemp)
 trap 'rm -f "$srcinfo_tmp"' EXIT
@@ -62,7 +63,7 @@ cargo metadata --locked --format-version 1 >/dev/null
 git diff --check
 
 tag="v$version"
-git add Cargo.toml Cargo.lock PKGBUILD .SRCINFO
+git add Cargo.toml Cargo.lock PKGBUILD .SRCINFO scripts/install
 git commit -m "chore(release): $tag"
 git tag -a "$tag" -m "release: $tag"
 git push origin main

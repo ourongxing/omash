@@ -49,9 +49,27 @@ curl -fsSL https://raw.githubusercontent.com/ourongxing/omash/main/scripts/insta
 ```
 
 The installer adds `mihomo` and `clash-geoip` through Omarchy, installs the Rust
-toolchain when `cargo` is unavailable, builds the latest omash release, and
-installs the binary and user service. Temporary source and build files are
-removed when it exits.
+toolchain when `cargo` is unavailable, builds the release tag pinned by the
+installer, and installs the binary and user service. Temporary source and build
+files are removed when it exits.
+
+To build and install from source instead:
+
+```bash
+omarchy pkg aur add mihomo clash-geoip
+
+# Run these two commands only when Cargo is not already installed.
+omarchy install dev-env rust
+source "$HOME/.cargo/env"
+
+git clone https://github.com/ourongxing/omash.git
+cd omash
+cargo build --locked --release
+sudo install -Dm755 target/release/omash /usr/bin/omash
+sudo install -Dm644 systemd/omash-supervisor.service \
+  /usr/lib/systemd/user/omash-supervisor.service
+systemctl --user daemon-reload
+```
 
 Run the dashboard:
 
