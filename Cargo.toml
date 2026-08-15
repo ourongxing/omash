@@ -6,6 +6,7 @@ license = "GPL-3.0-only"
 description = "A fast terminal dashboard for Mihomo/Clash"
 homepage = "https://github.com/ourongxing/omash"
 repository = "https://github.com/ourongxing/omash"
+publish = false
 
 [dependencies]
 anyhow = "1"

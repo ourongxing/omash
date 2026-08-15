@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+  echo "Usage: scripts/release <major|minor|patch|VERSION>" >&2
+}
+
+if [[ $# -ne 1 ]]; then
+  usage
+  exit 2
+fi
+
+release_level=$1
+if [[ ! $release_level =~ ^(major|minor|patch|[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?)$ ]]; then
+  usage
+  exit 2
+fi
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+if [[ $(git branch --show-current) != main ]]; then
+  echo "Release must run from the main branch." >&2
+  exit 1
+fi
+
+if ! git diff --quiet || ! git diff --cached --quiet || [[ -n $(git ls-files --others --exclude-standard) ]]; then
+  echo "Release requires a clean working tree." >&2
+  exit 1
+fi
+
+if ! command -v cargo-release >/dev/null 2>&1; then
+  echo "cargo-release is required: cargo install cargo-release --locked" >&2
+  exit 1
+fi
+
+git fetch origin main
+if [[ $(git rev-parse HEAD) != $(git rev-parse origin/main) ]]; then
+  echo "Local main must exactly match origin/main before releasing." >&2
+  exit 1
+fi
+
+cargo release version "$release_level" --execute --no-confirm
+
+version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+if [[ -z $version ]]; then
+  echo "Unable to read the new version from Cargo.toml." >&2
+  exit 1
+fi
+
+sed -i "s/^pkgver=.*/pkgver=$version/" PKGBUILD
+sed -i 's/^pkgrel=.*/pkgrel=1/' PKGBUILD
+
+srcinfo_tmp=$(mktemp)
+trap 'rm -f "$srcinfo_tmp"' EXIT
+makepkg --printsrcinfo >"$srcinfo_tmp"
+mv "$srcinfo_tmp" .SRCINFO
+trap - EXIT
+
+cargo metadata --locked --format-version 1 >/dev/null
+git diff --check
+
+tag="v$version"
+git add Cargo.toml Cargo.lock PKGBUILD .SRCINFO
+git commit -m "chore(release): $tag"
+git tag -a "$tag" -m "release: $tag"
+git push origin main
+git push origin "$tag"
+
+echo "Released $tag"

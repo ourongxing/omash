@@ -92,6 +92,26 @@ makepkg -si
 `pkgver`、`pkgrel`，并用发布归档的实际 BLAKE2 校验值替换 `SKIP`。
 `mihomo` 和 `clash-geoip` 都是直接运行时依赖，安装 omash 软件包时会同步安装。
 
+## 发布新版本
+
+安装 [`cargo-release`](https://github.com/crate-ci/cargo-release)：
+
+```bash
+cargo install cargo-release --locked
+```
+
+在干净且与 `origin/main` 同步的 `main` 分支执行：
+
+```bash
+scripts/release patch
+```
+
+也可将 `patch` 替换为 `minor`、`major` 或明确的版本号。该命令会同步更新
+`Cargo.toml`、`Cargo.lock`、`PKGBUILD` 和 `.SRCINFO`，创建 release commit 与
+`v<版本号>` tag，并将二者推送到 `origin`。tag 推送后由 GitHub Actions 创建
+GitHub Release；它只使用 `cargo-release` 的本地版本更新功能，不会访问或发布到
+crates.io。
+
 本地构建并安装：
 
 ```bash
