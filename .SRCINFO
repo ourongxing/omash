@@ -8,6 +8,7 @@ pkgbase = omash
 	makedepends = cargo
 	depends = mihomo
 	depends = clash-geoip
+	options = !lto
 	source = omash-0.1.1.tar.gz::https://github.com/ourongxing/omash/archive/refs/tags/v0.1.1.tar.gz
 	b2sums = SKIP
 

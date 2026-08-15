@@ -9,6 +9,7 @@ url='https://github.com/ourongxing/omash'
 license=('GPL-3.0-only')
 depends=('mihomo' 'clash-geoip')
 makedepends=('cargo')
+options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 b2sums=('SKIP')
 
