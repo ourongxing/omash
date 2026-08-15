@@ -15,7 +15,7 @@ use app::App;
 use clap::Parser;
 use config::{Cli, Command, Config};
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -43,7 +43,12 @@ async fn main() -> Result<()> {
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     Ok(Terminal::new(CrosstermBackend::new(stdout()))?)
 }
 
@@ -52,6 +57,7 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Re
     execute!(
         terminal.backend_mut(),
         DisableMouseCapture,
+        DisableBracketedPaste,
         LeaveAlternateScreen
     )?;
     terminal.show_cursor()?;

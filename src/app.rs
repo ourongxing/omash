@@ -149,6 +149,11 @@ impl App {
                             if self.handle_key(key).await? { break; }
                         }
                         Some(Ok(Event::Mouse(mouse))) => self.handle_mouse(mouse).await,
+                        Some(Ok(Event::Paste(text)))
+                            if matches!(self.input, Some(InputMode::ImportProfile)) =>
+                        {
+                            self.input_buffer.push_str(text.trim());
+                        }
                         Some(Err(error)) => self.status = format!("input error: {error}"),
                         None => break,
                         _ => {}
@@ -399,9 +404,24 @@ impl App {
             }
             Err(error) => {
                 self.online = false;
-                self.status = error.to_string();
+                self.status = self.offline_status(&error.to_string());
             }
         }
+    }
+
+    fn offline_status(&self, api_error: &str) -> String {
+        if self.profiles.items.is_empty() {
+            return "Mihomo is not running: no profile imported. Open Profiles and press a to import."
+                .into();
+        }
+        if !core::core_desired_enabled() {
+            return "Mihomo is stopped: disabled in Settings.".into();
+        }
+        self.supervisor
+            .error
+            .as_ref()
+            .map(|error| format!("Mihomo is not running: {error}"))
+            .unwrap_or_else(|| format!("Mihomo API unavailable: {api_error}"))
     }
 
     async fn update_due_profiles(&mut self) {
@@ -597,7 +617,12 @@ impl App {
             }
             KeyCode::Char(character) => self.input_buffer.push(character),
             KeyCode::Enter => {
-                let value = std::mem::take(&mut self.input_buffer);
+                let value = self.input_buffer.trim().to_owned();
+                if value.is_empty() {
+                    self.status = "Enter a subscription URL or an absolute YAML file path.".into();
+                    return;
+                }
+                self.input_buffer.clear();
                 self.input = None;
                 let result = if value.starts_with("http://") || value.starts_with("https://") {
                     self.profiles
@@ -623,7 +648,9 @@ impl App {
     async fn toggle_core(&mut self) {
         let enable = !core::core_desired_enabled();
         let result = core::request_core_enabled(enable).map(|()| {
-            if enable {
+            if enable && self.profiles.items.is_empty() {
+                "Mihomo cannot start: no profile imported. Open Profiles and press a to import."
+            } else if enable {
                 "Mihomo start requested"
             } else {
                 "Mihomo stop requested"

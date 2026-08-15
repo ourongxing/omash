@@ -334,7 +334,7 @@ pub async fn run_supervisor(mut config: Config) -> Result<()> {
             state.error = profiles
                 .items
                 .is_empty()
-                .then(|| "waiting for a profile".into());
+                .then(|| "Mihomo not started: no profile imported".into());
         } else if !manager.is_running() {
             let retry_due =
                 last_start_attempt.is_none_or(|attempt| attempt.elapsed() >= START_RETRY_BACKOFF);

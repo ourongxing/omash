@@ -428,6 +428,8 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
         "CORE STATUS",
         if app.online {
             "●  Online"
+        } else if app.profiles.items.is_empty() {
+            "!  Profile required"
         } else if app.supervisor.running {
             "◐  Starting"
         } else {
@@ -435,6 +437,8 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
         },
         if app.online {
             app.theme.success
+        } else if app.profiles.items.is_empty() {
+            app.theme.warning
         } else {
             app.theme.danger
         },
@@ -488,10 +492,12 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("SUPERVISOR    ", Style::default().fg(app.theme.muted)),
-            Span::raw(if app.supervisor.running {
+            Span::styled("MIHOMO       ", Style::default().fg(app.theme.muted)),
+            Span::raw(if app.profiles.items.is_empty() {
+                "Not started · no profile imported".into()
+            } else if app.supervisor.running {
                 format!(
-                    "Managed · PID {} · {} restarts · {} reloads",
+                    "Running · PID {} · {} restarts · {} reloads",
                     app.supervisor
                         .pid
                         .map_or_else(|| "—".into(), |pid| pid.to_string()),
@@ -560,10 +566,31 @@ fn dashboard(frame: &mut Frame, app: &App, area: Rect) {
                 ]
             })
             .unwrap_or_else(|| {
-                vec![Line::styled(
-                    "No proxy group available",
-                    Style::default().fg(app.theme.muted),
-                )]
+                if app.profiles.items.is_empty() {
+                    vec![
+                        Line::styled(
+                            "Mihomo has not started.",
+                            Style::default()
+                                .fg(app.theme.warning)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Line::from(""),
+                        Line::styled(
+                            "No profile has been imported.",
+                            Style::default().fg(app.theme.foreground),
+                        ),
+                        Line::from(""),
+                        Line::styled(
+                            "Open Profiles and press a to import a local YAML or subscription URL.",
+                            Style::default().fg(app.theme.muted),
+                        ),
+                    ]
+                } else {
+                    vec![Line::styled(
+                        "No proxy group available",
+                        Style::default().fg(app.theme.muted),
+                    )]
+                }
             });
         frame.render_widget(
             Paragraph::new(selected)
@@ -633,6 +660,33 @@ fn draw_mode_buttons(frame: &mut Frame, buttons: [Rect; 3], current: &str, theme
 }
 
 fn profiles(frame: &mut Frame, app: &App, area: Rect) {
+    if app.profiles.items.is_empty() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::styled(
+                    "Mihomo is not running because no profile has been imported.",
+                    Style::default()
+                        .fg(app.theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Line::from(""),
+                Line::styled(
+                    "Press a to import a local Clash/Mihomo YAML file or a subscription URL.",
+                    Style::default().fg(app.theme.foreground),
+                ),
+                Line::from(""),
+                Line::styled(
+                    "Mihomo will start automatically after the profile is validated and imported.",
+                    Style::default().fg(app.theme.muted),
+                ),
+            ])
+            .wrap(Wrap { trim: true })
+            .block(panel(" Profiles · action required ", &app.theme)),
+            area,
+        );
+        return;
+    }
     let rows = app.profiles.items.iter().map(|profile| {
         let active = if app.profiles.current.as_deref() == Some(&profile.uid) {
             "●"
@@ -1137,35 +1191,165 @@ fn help_binding(key: &'static str, description: &'static str, theme: &Theme) -> 
 }
 
 fn draw_input(frame: &mut Frame, app: &App) {
-    let area = centered(70, 5, frame.area());
+    match app.input.as_ref() {
+        Some(crate::app::InputMode::ImportProfile) => draw_import_input(frame, app),
+        Some(crate::app::InputMode::RestoreBackup(path)) => {
+            let area = centered(76, 7, frame.area());
+            frame.render_widget(Clear, area);
+            frame.render_widget(
+                Paragraph::new(format!(
+                    "Overwrite current configuration with {}?",
+                    path.display()
+                ))
+                .wrap(Wrap { trim: true })
+                .style(Style::default().fg(app.theme.foreground))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(app.theme.warning))
+                        .style(Style::default().bg(app.theme.surface))
+                        .padding(Padding::new(2, 2, 1, 1))
+                        .title(Span::styled(
+                            " Confirm restore · y Yes · n/Esc Cancel ",
+                            Style::default()
+                                .fg(app.theme.warning)
+                                .add_modifier(Modifier::BOLD),
+                        )),
+                ),
+                area,
+            );
+        }
+        None => {}
+    }
+}
+
+fn draw_import_input(frame: &mut Frame, app: &App) {
+    let area = centered(82, 12, frame.area());
     frame.render_widget(Clear, area);
-    let (title, content) = match app.input.as_ref() {
-        Some(crate::app::InputMode::ImportProfile) => (
-            " Import URL or local YAML path  [Enter · Esc] ",
-            app.input_buffer.clone(),
-        ),
-        Some(crate::app::InputMode::RestoreBackup(path)) => (
-            " Confirm restore  [y/N] ",
-            format!("Overwrite current configuration with {}?", path.display()),
-        ),
-        None => return,
-    };
     frame.render_widget(
-        Paragraph::new(content)
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(app.theme.accent))
             .style(Style::default().bg(app.theme.surface))
-            .block(
-                Block::default()
-                    .style(Style::default().bg(app.theme.surface))
-                    .padding(Padding::new(2, 2, 2, 1))
-                    .title(Span::styled(
-                        title,
-                        Style::default()
-                            .fg(app.theme.accent)
-                            .add_modifier(Modifier::BOLD),
-                    )),
-            ),
+            .title(Span::styled(
+                " Import profile ",
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )),
         area,
     );
+
+    let inner = area.inner(Margin::new(2, 1));
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    frame.render_widget(
+        Paragraph::new("Paste a subscription URL or enter an absolute local YAML path.")
+            .style(Style::default().fg(app.theme.foreground)),
+        rows[0],
+    );
+
+    let field_width = rows[1].width.saturating_sub(2) as usize;
+    let visible = input_tail(&app.input_buffer, field_width);
+    let field_content = if app.input_buffer.is_empty() {
+        Line::styled(
+            "https://… or /home/you/Downloads/config.yaml",
+            Style::default().fg(app.theme.muted),
+        )
+    } else {
+        Line::styled(visible.clone(), Style::default().fg(app.theme.foreground))
+    };
+    frame.render_widget(
+        Paragraph::new(field_content).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.accent))
+                .style(Style::default().bg(app.theme.surface_active)),
+        ),
+        rows[1],
+    );
+    let cursor_offset = if app.input_buffer.is_empty() {
+        0
+    } else {
+        visible.chars().count() as u16
+    };
+    frame.set_cursor_position((
+        rows[1].x + 1 + cursor_offset.min(rows[1].width.saturating_sub(2)),
+        rows[1].y + 1,
+    ));
+
+    frame.render_widget(
+        Paragraph::new("The profile is validated before Mihomo starts.")
+            .style(Style::default().fg(app.theme.muted)),
+        rows[2],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("URL   ", Style::default().fg(app.theme.muted)),
+            Span::raw("https://example.com/subscription"),
+        ])),
+        rows[4],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("FILE  ", Style::default().fg(app.theme.muted)),
+            Span::raw("/home/you/Downloads/config.yaml"),
+        ])),
+        rows[5],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                " Enter ",
+                Style::default()
+                    .fg(app.theme.background)
+                    .bg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Import   ", Style::default().fg(app.theme.foreground)),
+            Span::styled(
+                " Esc ",
+                Style::default()
+                    .fg(app.theme.foreground)
+                    .bg(app.theme.surface_active)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Cancel   ", Style::default().fg(app.theme.foreground)),
+            Span::styled(
+                " Ctrl+Shift+V ",
+                Style::default()
+                    .fg(app.theme.foreground)
+                    .bg(app.theme.surface_active)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Paste", Style::default().fg(app.theme.foreground)),
+        ])),
+        rows[7],
+    );
+}
+
+fn input_tail(value: &str, width: usize) -> String {
+    if value.chars().count() <= width {
+        return value.to_owned();
+    }
+    let tail = value
+        .chars()
+        .rev()
+        .take(width.saturating_sub(1))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("…{tail}")
 }
 
 fn centered(percent: u16, height: u16, area: Rect) -> Rect {
@@ -1186,6 +1370,8 @@ fn centered(percent: u16, height: u16, area: Rect) -> Rect {
 fn core_status(app: &App) -> (&'static str, &'static str, Color) {
     if app.online {
         ("●", "CORE ONLINE", app.theme.success)
+    } else if app.profiles.items.is_empty() {
+        ("!", "PROFILE REQUIRED", app.theme.warning)
     } else if app.supervisor.running {
         ("◐", "CORE STARTING", app.theme.warning)
     } else {
