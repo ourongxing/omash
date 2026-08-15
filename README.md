@@ -118,12 +118,11 @@ Mouse clicks, scrolling, and double-click actions are also supported.
 
 ## Omarchy Shell widget
 
-Install the included widget from the repository root:
+The widget requires the `omash` binary installed above. Add it to Omarchy Shell
+directly from the public repository:
 
 ```bash
-mkdir -p ~/.config/omarchy/plugins
-cp -r integrations/omarchy/ourongxing.omash ~/.config/omarchy/plugins/
-omarchy plugin enable ourongxing.omash --section right
+omarchy plugin add https://github.com/ourongxing/omash.git --enable
 ```
 
 The widget appears in the bar immediately through Omarchy Shell's hot reload.
@@ -135,6 +134,21 @@ modes.
 The widget calls `omash bar` and never reads or copies the Mihomo API secret.
 The `omash` binary must be available on the Shell's `PATH`. Its refresh interval
 can be changed from 2 to 60 seconds in the plugin settings.
+
+## Remove
+
+Remove the Shell widget, user service, and installed binary with:
+
+```bash
+omarchy plugin remove ourongxing.omash --yes
+systemctl --user disable --now omash-supervisor.service
+sudo rm -f /usr/bin/omash /usr/lib/systemd/user/omash-supervisor.service
+systemctl --user daemon-reload
+```
+
+The removal commands preserve your configuration, profiles, logs, and backups.
+To delete those user files too, remove `~/.config/omash` and
+`~/.local/share/omash` after making any backup you want to keep.
 
 ## Theme overrides
 

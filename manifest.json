@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "ourongxing.omash",
+  "name": "omash",
+  "version": "1.0.0",
+  "author": "ourongxing",
+  "license": "GPL-3.0-only",
+  "description": "Mihomo mode and proxy selector for the Omarchy bar",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "integrations/omarchy/ourongxing.omash/Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "omash",
+    "description": "Switch Mihomo routing modes and selector proxies",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 5
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 2,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 5
+      }
+    ]
+  }
+}
