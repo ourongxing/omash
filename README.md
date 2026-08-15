@@ -7,9 +7,11 @@
  ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
 ```
 
-`omash` is a fast, native terminal dashboard for Mihomo, built for
-[Omarchy](https://omarchy.org/). It manages the local Mihomo process, profiles,
-proxies, connections, rules, and logs without a browser runtime.
+`omash` is forked from
+[Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev) and
+reworked as a fast, native terminal dashboard for Mihomo, built for
+[Omarchy](https://omarchy.org/). It carries the upstream Mihomo management
+design into a Rust TUI without a browser runtime.
 
 The TUI is only the control surface. Mihomo runs under a user-level supervisor,
 so closing `omash` does not stop your proxy.
@@ -82,8 +84,8 @@ omash
 - Creates and restores local ZIP backups
 - Shows Mihomo logs and package versions
 
-The Mihomo management behavior is based on the Rust implementation in Clash
-Verge Rev, adapted to a native TUI and Omarchy's system layout.
+The Mihomo management behavior comes from Clash Verge Rev's Rust
+implementation, adapted to a native TUI and Omarchy's system layout.
 
 ## Controls
 
@@ -166,4 +168,5 @@ cargo build --release
 
 ## License
 
-GPL-3.0-only
+As a fork of Clash Verge Rev, `omash` remains licensed under GPL-3.0-only. The
+full, unmodified license is retained in [`LICENSE`](LICENSE).
