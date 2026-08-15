@@ -90,7 +90,7 @@ makepkg -si
 
 `PKGBUILD` 通过对应的 `v<版本号>` Git tag 获取源码。发布新版本时需同步更新
 `pkgver`、`pkgrel`，并用发布归档的实际 BLAKE2 校验值替换 `SKIP`。
-`mihomo` 是唯一的直接运行时依赖；它会继续依赖并更新 `clash-geoip`。
+`mihomo` 和 `clash-geoip` 都是直接运行时依赖，安装 omash 软件包时会同步安装。
 
 本地构建并安装：
 
