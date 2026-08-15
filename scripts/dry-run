@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --show-toplevel)
+build_root=$(mktemp -d -t omash-build.XXXXXXXX)
+
+cleanup() {
+  rm -rf -- "$build_root"
+}
+trap cleanup EXIT
+
+pkgname=$(sed -n 's/^pkgname=//p' "$repo_root/PKGBUILD")
+pkgver=$(sed -n 's/^pkgver=//p' "$repo_root/PKGBUILD")
+source_archive="$build_root/sources/$pkgname-$pkgver.tar.gz"
+
+mkdir -p "$build_root/sources" "$build_root/packages" "$build_root/work"
+
+cd "$repo_root"
+git ls-files --cached --others --exclude-standard -z |
+  while IFS= read -r -d '' path; do
+    if [[ -e "$path" || -L "$path" ]]; then
+      printf '%s\0' "$path"
+    fi
+  done |
+  tar --null --verbatim-files-from --files-from=- \
+    --transform="s|^|$pkgname-$pkgver/|" \
+    --create --gzip --file="$source_archive"
+
+SRCDEST="$build_root/sources" \
+  PKGDEST="$build_root/packages" \
+  BUILDDIR="$build_root/work" \
+  makepkg --clean

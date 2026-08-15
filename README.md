@@ -40,38 +40,24 @@ so closing `omash` does not stop your proxy.
   change the routing mode, select proxies, and run delay tests without opening
   the TUI.
 
-## Install
+## Local package dry run
 
-Install Mihomo, then build the package from this repository:
+With the dependencies from `PKGBUILD` already installed, validate the current
+working tree by building and testing its package:
 
 ```bash
-omarchy pkg aur add mihomo
-scripts/install
+scripts/dry-run
 ```
 
-The install script builds through `makepkg` in a temporary directory and
-removes downloaded source archives, package archives, and work files when it
+The script snapshots the current working tree into a temporary source archive
+and runs `makepkg` without installing dependencies or the resulting package.
+All source archives, package archives, and work files are removed when it
 exits.
 
-Run the dashboard:
-
-```bash
-omash
-```
-
-On first launch, `omash` creates its configuration, enables the user service
-when `auto_start` is enabled, and starts the supervisor for the current session.
-It also generates a random API secret; you do not need to configure or start
-Mihomo separately.
-
-To build without packaging:
+To build the current working tree without packaging:
 
 ```bash
 cargo build --release
-sudo install -Dm755 target/release/omash /usr/bin/omash
-sudo install -Dm644 systemd/omash-supervisor.service \
-  /usr/lib/systemd/user/omash-supervisor.service
-omash
 ```
 
 ## What it does
