@@ -1,7 +1,7 @@
 # Maintainer: Ourongxing
 
 pkgname=omash
-pkgver=0.1.2
+pkgver=0.1.3
 pkgrel=1
 pkgdesc='Terminal dashboard for Mihomo on Omarchy'
 arch=('x86_64')
