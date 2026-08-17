@@ -78,10 +78,19 @@ omash
 
 ### Optional Shell widget
 
-The installer does not add the Omarchy Shell widget. Install it separately:
+The installer does not add the Omarchy Shell widget. Install it from the public
+repository:
 
 ```bash
 omarchy plugin add https://github.com/ourongxing/omash.git --enable
+```
+
+Or install it from a source checkout while in the repository root:
+
+```bash
+mkdir -p ~/.config/omarchy/plugins
+cp -r integrations/omarchy/ourongxing.omash ~/.config/omarchy/plugins/
+omarchy plugin enable ourongxing.omash --section right
 ```
 
 The widget appears immediately and supports mode changes, proxy selection, and
