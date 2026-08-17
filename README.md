@@ -56,6 +56,26 @@ does not install system packages or use `sudo`. On first launch, `omash` creates
 its configuration, starts the supervisor, and enables login startup because
 `auto_start = true` by default.
 
+### Install from source
+
+After installing the dependencies above, build and install manually:
+
+```bash
+git clone https://github.com/ourongxing/omash.git
+cd omash
+cargo build --locked --release
+
+install -Dm755 target/release/omash "$HOME/.local/bin/omash"
+systemd_user_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+install -Dm644 systemd/omash-supervisor.service \
+  "$systemd_user_dir/omash-supervisor.service"
+sed -i 's|^ExecStart=.*|ExecStart=%h/.local/bin/omash --daemon|' \
+  "$systemd_user_dir/omash-supervisor.service"
+systemctl --user daemon-reload
+
+omash
+```
+
 ### Optional Shell widget
 
 The installer does not add the Omarchy Shell widget. Install it separately:
