@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+service_name=omash-supervisor.service
+systemd_user_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+user_binary="$HOME/.local/bin/omash"
+user_service="$systemd_user_dir/$service_name"
+plugin_path="$HOME/.config/omarchy/plugins/ourongxing.omash"
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user disable --now "$service_name" >/dev/null 2>&1 || true
+fi
+
+if [[ -e $plugin_path || -L $plugin_path ]]; then
+  if command -v omarchy >/dev/null 2>&1; then
+    omarchy plugin remove ourongxing.omash --yes
+  else
+    echo "Omarchy is unavailable; kept Shell plugin at $plugin_path." >&2
+  fi
+fi
+
+rm -f -- "$user_binary" "$user_service"
+
+if command -v pacman >/dev/null 2>&1 && pacman -Qq omash >/dev/null 2>&1; then
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "sudo is required to remove the pacman-managed omash package." >&2
+    exit 1
+  fi
+  sudo pacman -R --noconfirm omash
+fi
+
+legacy_files=(
+  /usr/bin/omash
+  /usr/lib/systemd/user/omash-supervisor.service
+  /usr/share/licenses/omash/LICENSE
+  /usr/share/omash/themes/default.toml
+  /usr/share/omash/omarchy/ourongxing.omash/manifest.json
+  /usr/share/omash/omarchy/ourongxing.omash/Panel.qml
+  /usr/share/omash/omarchy/ourongxing.omash/README.md
+)
+legacy_unowned=()
+
+for path in "${legacy_files[@]}"; do
+  [[ -e $path || -L $path ]] || continue
+  if command -v pacman >/dev/null 2>&1 && pacman -Qo "$path" >/dev/null 2>&1; then
+    echo "Kept package-managed file: $path" >&2
+  else
+    legacy_unowned+=("$path")
+  fi
+done
+
+if (( ${#legacy_unowned[@]} )); then
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "sudo is required to remove files left by earlier installers." >&2
+    exit 1
+  fi
+  sudo rm -f -- "${legacy_unowned[@]}"
+  sudo rmdir --ignore-fail-on-non-empty \
+    /usr/share/omash/omarchy/ourongxing.omash \
+    /usr/share/omash/omarchy \
+    /usr/share/omash/themes \
+    /usr/share/omash \
+    /usr/share/licenses/omash \
+    2>/dev/null || true
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --user daemon-reload
+  systemctl --user reset-failed "$service_name" >/dev/null 2>&1 || true
+fi
+
+echo "Uninstalled omash. Configuration and runtime data were preserved."

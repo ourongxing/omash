@@ -42,16 +42,49 @@ so closing `omash` does not stop your proxy.
 
 ## Install
 
-On Omarchy, run:
+On Omarchy, install the dependencies first:
+
+```bash
+omarchy pkg aur add mihomo clash-geoip
+
+# Run these two commands only when Cargo is not already installed.
+omarchy install dev-env rust
+source "$HOME/.cargo/env"
+```
+
+Then install `omash` into your home directory:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ourongxing/omash/main/scripts/install | bash
 ```
 
-The installer adds `mihomo` and `clash-geoip` through Omarchy, installs the Rust
-toolchain when `cargo` is unavailable, builds the release tag pinned by the
-installer, and installs the binary and user service. Temporary source and build
-files are removed when it exits.
+The installer verifies that the dependencies are available, builds the release
+tag pinned by the installer, and installs the binary and user service under your
+home directory. It does not install system packages or use `sudo`. Temporary
+source and build files are removed when the installer exits.
+
+The default installation locations have changed from the system-wide `/usr`
+layout used by earlier releases. The installer now writes only:
+
+- `~/.local/bin/omash`
+- `$XDG_CONFIG_HOME/systemd/user/omash-supervisor.service`, or
+  `~/.config/systemd/user/omash-supervisor.service` when `XDG_CONFIG_HOME` is
+  unset
+
+### Update
+
+Do not install a new version over an existing installation. Because the default
+locations changed, update by uninstalling the current or legacy version first,
+then run the installer again:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ourongxing/omash/main/scripts/uninstall | bash
+curl -fsSL https://raw.githubusercontent.com/ourongxing/omash/main/scripts/install | bash
+```
+
+The uninstaller preserves your omash configuration, profiles, logs, and
+backups. It removes the optional Omarchy Shell widget; if you were using it,
+add it again after the update as described in [Omarchy Shell widget](#omarchy-shell-widget).
 
 To build and install from source instead:
 
@@ -65,9 +98,12 @@ source "$HOME/.cargo/env"
 git clone https://github.com/ourongxing/omash.git
 cd omash
 cargo build --locked --release
-sudo install -Dm755 target/release/omash /usr/bin/omash
-sudo install -Dm644 systemd/omash-supervisor.service \
-  /usr/lib/systemd/user/omash-supervisor.service
+install -Dm755 target/release/omash "$HOME/.local/bin/omash"
+systemd_user_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+install -Dm644 systemd/omash-supervisor.service \
+  "$systemd_user_dir/omash-supervisor.service"
+sed -i 's|^ExecStart=.*|ExecStart=%h/.local/bin/omash --daemon|' \
+  "$systemd_user_dir/omash-supervisor.service"
 systemctl --user daemon-reload
 ```
 
@@ -137,16 +173,18 @@ can be changed from 2 to 60 seconds in the plugin settings.
 
 ## Remove
 
-Remove the Shell widget, user service, and installed binary with:
+Remove the Shell widget, user service, installed binary, and files left by
+earlier system-wide installers with:
 
 ```bash
-omarchy plugin remove ourongxing.omash --yes
-systemctl --user disable --now omash-supervisor.service
-sudo rm -f /usr/bin/omash /usr/lib/systemd/user/omash-supervisor.service
-systemctl --user daemon-reload
+curl -fsSL https://raw.githubusercontent.com/ourongxing/omash/main/scripts/uninstall | bash
 ```
 
-The removal commands preserve your configuration, profiles, logs, and backups.
+From a source checkout, run `scripts/uninstall` instead. The uninstaller also
+uses pacman when `omash` was installed as a package, and requests `sudo` only
+when package-managed or legacy system files need removal.
+
+The uninstaller preserves your configuration, profiles, logs, and backups.
 To delete those user files too, remove `~/.config/omash` and
 `~/.local/share/omash` after making any backup you want to keep.
 

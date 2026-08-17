@@ -16,26 +16,25 @@ if ! command -v omarchy >/dev/null 2>&1; then
   exit 1
 fi
 
-for command in curl tar sudo install systemctl; do
+for command in cargo curl tar install sed systemctl; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "$command is required to install omash." >&2
+    if [[ $command == cargo ]]; then
+      echo "Install it first with: omarchy install dev-env rust" >&2
+    fi
     exit 1
   fi
 done
 
-omarchy pkg aur add mihomo clash-geoip
-
-if ! command -v cargo >/dev/null 2>&1; then
-  omarchy install dev-env rust
-  # rustup does not update the environment of an already running shell.
-  if [[ -f "$HOME/.cargo/env" ]]; then
-    # shellcheck disable=SC1091
-    source "$HOME/.cargo/env"
-  fi
+missing_packages=()
+[[ -x /usr/bin/mihomo ]] || missing_packages+=(mihomo)
+if [[ ! -f /etc/mihomo/Country.mmdb && ! -f /etc/clash/Country.mmdb ]]; then
+  missing_packages+=(clash-geoip)
 fi
 
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "cargo is required to build omash." >&2
+if (( ${#missing_packages[@]} )); then
+  echo "Install the required system packages first:" >&2
+  echo "  omarchy pkg aur add ${missing_packages[*]}" >&2
   exit 1
 fi
 
@@ -51,24 +50,19 @@ source_root="$build_root/omash-${install_tag#v}"
 
 cargo build --locked --release --manifest-path "$source_root/Cargo.toml"
 
-sudo install -Dm755 "$source_root/target/release/omash" /usr/bin/omash
-sudo install -Dm644 "$source_root/systemd/omash-supervisor.service" \
-  /usr/lib/systemd/user/omash-supervisor.service
-sudo install -Dm644 "$source_root/LICENSE" \
-  /usr/share/licenses/omash/LICENSE
-sudo install -Dm644 "$source_root/themes/default.toml" \
-  /usr/share/omash/themes/default.toml
-sudo install -Dm644 \
-  "$source_root/integrations/omarchy/ourongxing.omash/manifest.json" \
-  /usr/share/omash/omarchy/ourongxing.omash/manifest.json
-sudo install -Dm644 \
-  "$source_root/integrations/omarchy/ourongxing.omash/Panel.qml" \
-  /usr/share/omash/omarchy/ourongxing.omash/Panel.qml
-sudo install -Dm644 \
-  "$source_root/integrations/omarchy/ourongxing.omash/README.md" \
-  /usr/share/omash/omarchy/ourongxing.omash/README.md
+binary_path="$HOME/.local/bin/omash"
+service_path="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/omash-supervisor.service"
+
+install -Dm755 "$source_root/target/release/omash" "$binary_path"
+install -Dm644 "$source_root/systemd/omash-supervisor.service" "$service_path"
+sed -i 's|^ExecStart=.*|ExecStart=%h/.local/bin/omash --daemon|' "$service_path"
 
 systemctl --user daemon-reload
 systemctl --user try-restart omash-supervisor.service
 
-echo "Installed omash $install_tag. Run: omash"
+echo "Installed omash $install_tag to $binary_path."
+if [[ :$PATH: == *":$HOME/.local/bin:"* ]]; then
+  echo "Run: omash"
+else
+  echo "Add $HOME/.local/bin to PATH, then run: omash"
+fi
