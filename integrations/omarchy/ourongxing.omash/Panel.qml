@@ -165,7 +165,7 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(430))
-    contentHeight: panel.fittedContentHeight(Math.min(content.implicitHeight, Style.space(500)))
+    contentHeight: panel.fittedContentHeight(content.implicitHeight)
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -327,7 +327,7 @@ Panel {
               Rectangle {
                 id: groupPane
                 width: Math.floor((groupBrowser.width - groupBrowser.spacing) * 0.42)
-                height: groupList.implicitHeight + Style.space(6)
+                height: Math.min(Math.max(groupList.implicitHeight, proxyList.implicitHeight) + Style.space(6), Style.space(560))
                 color: Style.normalFillFor(root.contentForeground, Color.accent)
                 radius: Style.cornerRadius
 
