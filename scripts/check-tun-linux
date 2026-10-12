@@ -1,0 +1,854 @@
+#!/usr/bin/env bash
+# Run on a disposable systemd VM. All test traffic/routes live in dedicated namespaces.
+# Uses target/debug/omash unless OMASH_TEST_BINARY is set; OMASH_TEST_PROFILE adds a real-proxy check.
+set -Eeuo pipefail
+# Under pipefail a consumer must read all of its input: `grep -q` exits at the first
+# match and a producer that is still writing (nft flushes after every line) dies of
+# SIGPIPE, failing the pipeline. Match piped output with `grep ... >/dev/null` instead.
+trap 'echo "check-tun-linux: line $LINENO failed (exit $?): $BASH_COMMAND" >&2' ERR
+trap 'exit 130' HUP INT TERM
+[[ $(uname -s) == Linux && $EUID == 0 ]] || { echo 'Requires root on Linux/systemd' >&2; exit 1; }
+export PATH="$PATH:/usr/local/sbin:/usr/sbin:/sbin"
+missing=()
+for tool in ip nft modprobe systemctl loginctl useradd userdel runuser chpasswd python3 curl dig sha256sum sudo visudo script install mktemp stat timeout journalctl cmp diff; do
+  command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+done
+for path in /usr/bin/ip /usr/bin/systemctl /usr/bin/sudo /usr/bin/mihomo; do
+  [[ -x $path ]] || missing+=("$path")
+done
+[[ -x /usr/bin/nft || -x /usr/sbin/nft ]] || missing+=('/usr/bin/nft or /usr/sbin/nft (the helper runs nft only from these paths)')
+[[ -x /usr/sbin/getcap || -x /usr/bin/getcap ]] || missing+=('getcap (libcap; the helper verifies /usr/bin/mihomo with it)')
+[[ -f /etc/mihomo/Country.mmdb || -f /etc/clash/Country.mmdb ]] || missing+=('/etc/mihomo/Country.mmdb (clash-geoip package)')
+[[ -c /dev/net/tun ]] || missing+=('/dev/net/tun (character device)')
+if ((${#missing[@]})); then
+  echo 'Missing prerequisites:' >&2
+  printf '  %s\n' "${missing[@]}" >&2
+  echo 'Install the packages that provide them (iproute2, nftables, kmod, util-linux, shadow, sudo, python3, curl, bind/dnsutils for dig, libcap, mihomo, clash-geoip).' >&2
+  exit 1
+fi
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+binary=${OMASH_TEST_BINARY:-$root/target/debug/omash}
+if [[ ! -f $binary || ! -x $binary ]]; then
+  echo "omash binary not found or not executable: $binary" >&2
+  echo "Run 'cargo build' (this check uses target/debug/omash by default) or set OMASH_TEST_BINARY." >&2
+  exit 1
+fi
+for script in check-tun-ui.py check-tun-traffic.py check-tun-toggle.py check-tun-setup-ui.py tun-fixture.py; do
+  [[ -f $root/scripts/$script ]] || { echo "Missing helper script: $root/scripts/$script" >&2; exit 1; }
+done
+# The nft program the helper runs: the first of these paths, symlinks resolved (src/tun/firewall.rs `program`).
+nft_program=
+for path in /usr/bin/nft /usr/sbin/nft; do
+  if [[ -e $path ]]; then nft_program=$(readlink -f "$path"); break; fi
+done
+user=omash-tun-test
+ns=omash-tun-test
+peer=omash-tun-peer
+# Under /home on purpose: the helper unit mounts /home read-only and only the data directory writable.
+home=/home/omash-tun-test
+data=$home/.local/share/omash
+state_file=$data/supervisor-state.json
+sudoers=/etc/sudoers.d/omash-tun-test
+secret=local-integration-test-only
+for path in /etc/omash-tun.json /etc/systemd/system/omash-tun.service /usr/local/libexec/omash-tun-service /run/systemd/system/omash-tun.service.d "$home" "/run/netns/$ns" "/run/netns/$peer" "$sudoers"; do
+  if [[ -e $path || -L $path ]]; then
+    echo "Refusing to replace an existing installation or previous test resource: $path" >&2
+    exit 1
+  fi
+done
+if id "$user" >/dev/null 2>&1; then echo "Refusing to continue: user $user already exists" >&2; exit 1; fi
+work=$(mktemp -d /var/tmp/omash-tun-check.XXXXXXXX)
+chmod 755 "$work"
+for helper in check-tun-ui.py check-tun-traffic.py check-tun-toggle.py check-tun-setup-ui.py; do
+  install -m644 "$root/scripts/$helper" "$work/$helper"
+done
+# The one allowed privileged command must use a binary the test user cannot replace.
+install -m755 "$binary" "$work/omash"
+uid=
+gid=
+fixture_pid=
+blocker_pid=
+slirp_pid=
+paused_pid=
+helper_installed=false
+sudoers_installed=false
+ip_tables_loaded_by_test=false
+# Set after the last check; a passing run does not keep the copied binary.
+passed=false
+# Set while nft is executable by root only; cleanup restores this mode.
+nft_restore_mode=
+cleanup() {
+  trap - ERR
+  set +e
+  [[ -z $paused_pid ]] || kill -CONT "$paused_pid" 2>/dev/null
+  # Before anything stops the helper, so that its own exception cleanup can still run nft.
+  [[ -z $nft_restore_mode ]] || chmod "$nft_restore_mode" "$nft_program"
+  # Keep non-secret evidence before the test user's home is removed.
+  if [[ -n $uid ]]; then
+    cp "$state_file" "$work/final-supervisor-state.json" 2>/dev/null
+    cp "$data/logs/core-validation.log" "$work/core-validation.log" 2>/dev/null
+  fi
+  journalctl -u omash-tun.service -n 300 --no-pager > "$work/helper-journal.txt" 2>&1
+  if [[ $sudoers_installed == true ]]; then rm -f "$sudoers"; fi
+  if [[ -n $uid ]]; then
+    runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" systemctl --user stop omash-supervisor.service >/dev/null 2>&1
+  fi
+  if [[ $helper_installed == true && -e /etc/omash-tun.json ]]; then
+    SUDO_UID="$uid" "$binary" internal-tun-uninstall "$uid" >/dev/null 2>&1
+  fi
+  rm -rf /run/systemd/system/omash-tun.service.d
+  if [[ -n $uid ]]; then
+    loginctl disable-linger "$user" >/dev/null 2>&1
+    systemctl stop "user@$uid.service" >/dev/null 2>&1
+    rm -rf "/run/systemd/system/user@$uid.service.d"
+    userdel --remove "$user" >/dev/null 2>&1
+  fi
+  [[ -z $fixture_pid ]] || kill "$fixture_pid" 2>/dev/null
+  [[ -z $blocker_pid ]] || kill "$blocker_pid" 2>/dev/null
+  [[ -z $slirp_pid ]] || kill "$slirp_pid" 2>/dev/null
+  ip netns del "$ns" 2>/dev/null
+  ip netns del "$peer" 2>/dev/null
+  if [[ $ip_tables_loaded_by_test == true ]]; then modprobe -r ip_tables 2>/dev/null; fi
+  systemctl daemon-reload
+  if [[ $passed == true ]]; then rm -f "$work/omash"; fi
+  echo "Test diagnostics: $work"
+}
+trap cleanup EXIT
+# A loaded legacy xtables module creates a root-only /proc/net/ip_tables_names in
+# every network namespace. The unprivileged helper must not depend on reading it,
+# so the whole run happens with the module loaded.
+if [[ ! -d /sys/module/ip_tables ]]; then
+  modprobe ip_tables || { echo 'Cannot load the ip_tables kernel module' >&2; exit 1; }
+  ip_tables_loaded_by_test=true
+fi
+snapshot_host() { ip -4 rule; ip -6 rule; ip -4 route show table all; ip -6 route show table all; }
+snapshot_host > "$work/host.before"
+useradd --system --user-group --create-home --home-dir "$home" --shell /bin/bash "$user"
+uid=$(id -u "$user")
+gid=$(id -g "$user")
+ip netns add "$ns"
+ip netns add "$peer"
+ip link add eth0 netns "$ns" type veth peer name eth0 netns "$peer"
+ip -n "$ns" addr add 10.241.1.2/24 dev eth0
+ip -n "$peer" addr add 10.241.1.1/24 dev eth0
+ip -n "$ns" -6 addr add fd00:241::2/64 dev eth0 nodad
+ip -n "$peer" -6 addr add fd00:241::1/64 dev eth0 nodad
+ip -n "$peer" addr add 198.51.100.1/32 dev lo
+ip -n "$peer" addr add 198.51.100.99/32 dev lo
+ip -n "$peer" -6 addr add 2001:db8:241::1/128 dev lo nodad
+ip -n "$peer" -6 addr add 2001:db8:241::99/128 dev lo nodad
+for n in "$ns" "$peer"; do ip -n "$n" link set lo up; ip -n "$n" link set eth0 up; done
+ip -n "$ns" route add default via 10.241.1.1
+ip -n "$ns" -6 route add default via fd00:241::1 dev eth0
+# Exercise the actual capability-limited helper under default-deny filtering.
+# This table exists only in the disposable test namespace.
+load_test_firewall() {
+  ip netns exec "$ns" nft -f - <<'NFT'
+table inet omash_test_firewall {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    iifname "lo" accept
+    ct state established,related accept
+    meta l4proto ipv6-icmp accept
+  }
+}
+NFT
+}
+load_test_firewall
+# Simulate an existing container bridge and VPN interface/policy owned by another component.
+ip -n "$ns" link add docker-test type bridge
+ip -n "$ns" addr add 172.30.99.1/24 dev docker-test
+ip -n "$ns" link set docker-test up
+ip netns exec "$ns" ip tuntap add dev vpn-test mode tun
+ip -n "$ns" addr add 10.251.0.1/24 dev vpn-test
+ip -n "$ns" link set vpn-test up
+ip -n "$ns" rule add priority 20000 to 203.0.113.128/25 table 199
+ip -n "$ns" route add blackhole 203.0.113.128/25 table 199
+ip -n "$ns" -4 rule show > "$work/rules4.before"
+ip -n "$ns" -6 rule show > "$work/rules6.before"
+ip netns exec "$peer" python3 "$root/scripts/tun-fixture.py" > "$work/fixture.log" 2>&1 &
+fixture_pid=$!
+install -d "/run/systemd/system/user@$uid.service.d" /run/systemd/system/omash-tun.service.d
+printf '[Service]\nNetworkNamespacePath=/run/netns/%s\n' "$ns" > "/run/systemd/system/user@$uid.service.d/90-omash-test.conf"
+printf '[Service]\nNetworkNamespacePath=/run/netns/%s\n' "$ns" > /run/systemd/system/omash-tun.service.d/90-omash-test.conf
+systemctl daemon-reload
+loginctl enable-linger "$user"
+systemctl start "user@$uid.service"
+run_in() { ip netns exec "$ns" runuser -u "$user" -- env -i HOME="$home" USER="$user" PATH=/usr/bin:/bin XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" "$@"; }
+
+# Helpers. State expressions are Python over the JSON document `s`: the supervisor state file
+# ({running, pid, restarts, reloads, error, *_revision, backend, tun_*}) or the `omash tun status` output
+# ({desired, active, supervisor, helper | helper_error}).
+json_ok() { python3 -c 'import json, sys
+s = json.load(sys.stdin)
+sys.exit(0 if eval(sys.argv[1]) else 1)' "$1"; }
+json_val() { python3 -c 'import json, sys
+s = json.load(sys.stdin)
+print(eval(sys.argv[1]))' "$1"; }
+state_ok() { json_ok "$1" 2>/dev/null < "$state_file"; }
+state_val() { json_val "$1" < "$state_file"; }
+status_ok() { run_in "$home/omash" tun status 2>/dev/null | json_ok "$1" 2>/dev/null; }
+status_val() { run_in "$home/omash" tun status | json_val "$1"; }
+dump_state() {
+  echo '--- supervisor state ---'
+  cat "$state_file" 2>&1 || true
+  echo
+  echo '--- omash tun status ---'
+  run_in timeout 20 "$home/omash" tun status 2>&1 | head -60 || true
+  echo "--- ip rules in $ns ---"
+  ip -n "$ns" -4 rule show 2>&1 | head -30 || true
+  ip -n "$ns" -6 rule show 2>&1 | head -30 || true
+  echo '--- omash-tun.service journal ---'
+  journalctl -u omash-tun.service -n 20 --no-pager 2>&1 || true
+}
+fail() { echo "FAIL: $*" >&2; dump_state >&2; exit 1; }
+wait_state() { # seconds description expression
+  local end=$((SECONDS + $1 + 1))
+  while ((SECONDS < end)); do
+    if state_ok "$3"; then return 0; fi
+    sleep .5
+  done
+  fail "timed out after ${1}s waiting for: $2 [$3]"
+}
+require_state() { # description expression
+  state_ok "$2" || fail "$1 [$2]"
+}
+# Pauses the supervisor, runs a TUN command in the background and, once that command has requested
+# its revision, changes the profile so that the supervisor only ever sees a newer revision. The CLI
+# computes the revision it waits for right after writing the restart request, before its
+# `systemctl --user` calls; the extra second leaves it ample time. Output goes to the given log.
+supersede() { # log command...
+  local log=$1 sup before cli end
+  shift
+  sup=$(run_in systemctl --user show -p MainPID --value omash-supervisor.service)
+  [[ $sup =~ ^[0-9]+$ && $sup -gt 1 ]] || fail "cannot find the supervisor main PID (got '$sup')"
+  before=$(cat "$data/restart-request" 2>/dev/null || true)
+  paused_pid=$sup
+  kill -STOP "$sup"
+  run_in "$@" > "$log" 2>&1 &
+  cli=$!
+  end=$((SECONDS + 20))
+  while [[ $(cat "$data/restart-request" 2>/dev/null || true) == "$before" ]]; do
+    kill -0 "$cli" 2>/dev/null || { cat "$log" >&2; fail "$* exited before requesting its revision"; }
+    ((SECONDS < end)) || fail "$* did not request a revision"
+    sleep .1
+  done
+  sleep 1
+  echo "# superseding change $(date +%s%N)" >> "$data/profiles/test.yaml"
+  kill -CONT "$sup"; paused_pid=
+  wait "$cli" || { cat "$log" >&2; fail "$* failed after a later change superseded its revision"; }
+}
+# The command's output must show that it followed the newer revision and reported that one.
+followed() { # log
+  python3 - "$1" <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding='utf-8', errors='replace').read()
+moves = re.findall(r'revision (\w+) was superseded by a later change; waiting for (\w+)', text)
+assert moves, 'no later revision was followed: ' + text[-400:]
+first, last = moves[0][0], moves[-1][1]
+assert last != first, 'the followed revision is the superseded one'
+applied = re.findall(r'applied revision (\w+)', text)
+assert not applied or applied[-1] == last, f'reported {applied[-1]}, but followed {last}'
+PY
+}
+api() { # method path [json body]
+  local args=(-fsS -X "$1" -H "Authorization: Bearer $secret")
+  if (($# >= 3)); then args+=(-H 'Content-Type: application/json' -d "$3"); fi
+  run_in curl "${args[@]}" "http://127.0.0.1:19090$2"
+}
+live_mode() { api GET /configs | json_val "s['mode'].lower()"; }
+tun_ifindex() { ip -n "$ns" -j link show omash-tun | json_val "s[0]['ifindex']"; }
+via_proxy() { run_in curl --proxy http://127.0.0.1:17897 --noproxy '' -fsS --max-time 5 "$1"; }
+validations() {
+  local log=$data/logs/core-validation.log
+  if [[ -f $log ]]; then grep -c 'test is successful' "$log" || true; else echo 0; fi
+}
+expect_validations() { # expected description command...
+  local expected=$1 what=$2 before after
+  shift 2
+  before=$(validations)
+  "$@"
+  after=$(validations)
+  ((after - before == expected)) || fail "$what ran $((after - before)) core validations, expected $expected"
+}
+
+install -d -o "$uid" -g "$gid" "$home/.config/omash" "$home/.config/systemd/user" "$data/profiles" "$data/logs" "$data/backups"
+install -o "$uid" -g "$gid" -m755 "$binary" "$home/omash"
+cat > "$home/.config/systemd/user/omash-supervisor.service" <<UNIT
+[Unit]
+Description=Omash test supervisor
+[Service]
+ExecStart=$home/omash --daemon
+Restart=no
+[Install]
+WantedBy=default.target
+UNIT
+cat > "$home/.config/omash/config.toml" <<'TOML'
+controller = 'http://127.0.0.1:19090'
+secret = 'local-integration-test-only'
+mixed_port = 17897
+system_proxy = false
+auto_start = false
+ipv6 = true
+tun_enabled = false
+TOML
+cat > "$data/profiles.yaml" <<'YAML'
+current: test
+items:
+- uid: test
+  type: local
+  core: mihomo
+  name: integration fixture
+  file: test.yaml
+  updated: 0
+YAML
+cat > "$data/profiles/test.yaml" <<'YAML'
+mode: rule
+log-level: info
+dns:
+  enable: true
+  enhanced-mode: redir-host
+  nameserver: [10.241.1.1]
+  default-nameserver: [10.241.1.1]
+tun:
+  mtu: 1500
+proxy-groups:
+- {name: Select, type: select, proxies: [DIRECT, REJECT]}
+rules:
+- IP-CIDR,198.51.100.99/32,REJECT
+- IP-CIDR6,2001:db8:241::99/128,REJECT
+- MATCH,DIRECT
+YAML
+cp "$data/profiles/test.yaml" "$work/good.yaml"
+chown -R "$uid:$gid" "$home"
+chmod 600 "$home/.config/omash/config.toml"
+run_in systemctl --user daemon-reload
+# Prove every test endpoint is reachable without TUN, including the REJECT controls.
+run_in python3 "$work/check-tun-traffic.py" self-test
+run_in python3 "$work/check-tun-traffic.py" direct
+# Before setup: the requested revision must fail and the CLI must exit nonzero.
+if run_in "$home/omash" tun on > "$work/missing-helper.log" 2>&1; then echo 'missing helper was accepted' >&2; exit 1; fi
+grep -q 'TUN request failed' "$work/missing-helper.log"
+grep -q 'TUN helper unavailable; run `omash tun setup`' "$work/missing-helper.log"
+# C2: the failed request leaves an ordinary proxy running (without TUN) instead of nothing.
+wait_state 15 'ordinary proxy after the failed TUN request' "s['running'] and s['backend'] == 'direct' and not s['tun_active'] and s['tun_state'] == 'unavailable' and 'helper unavailable' in (s['error'] or '') and 'without TUN' in (s['error'] or '') and s['applied_revision'] != s['desired_revision']"
+[[ $(via_proxy http://198.51.100.1:18080/) == omash-fixture ]] || fail 'the fallback proxy did not carry traffic'
+run_in systemctl --user stop omash-supervisor.service
+hash=$(sha256sum "$binary" | cut -d' ' -f1)
+cat > /run/systemd/system/omash-tun.service.d/91-missing-caps.conf <<'UNIT'
+[Service]
+AmbientCapabilities=
+CapabilityBoundingSet=
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+UNIT
+SUDO_UID="$uid" "$binary" internal-tun-install "$uid" "$gid" "$data" "$hash"
+helper_installed=true
+if run_in "$home/omash" tun on > "$work/missing-caps.log" 2>&1; then echo 'helper without NET_ADMIN accepted' >&2; exit 1; fi
+# (A leading `!` is ignored by `set -e`, so every negated check needs an explicit failure branch.)
+! ip -n "$ns" link show omash-tun >/dev/null 2>&1 || fail 'a TUN device exists although the helper lacks CAP_NET_ADMIN'
+rm /run/systemd/system/omash-tun.service.d/91-missing-caps.conf
+systemctl daemon-reload
+systemctl reset-failed omash-tun.service
+systemctl restart omash-tun.service
+run_in "$home/omash" tun on
+run_in "$home/omash" tun status > "$work/active.json"
+python3 - "$work/active.json" "$uid" <<'PY'
+import json,sys
+s=json.load(open(sys.argv[1])); h=s['helper']
+assert h['uid']==int(sys.argv[2]) and h['running'] and h['tun_active']
+p=open('/proc/%d/status'%h['pid']).read()
+assert 'CapEff:\t0000000000003000' in p and 'NoNewPrivs:\t1' in p
+assert 'Seccomp:\t2' in p, 'the helper unit syscall filter is not active'
+assert [l for l in p.splitlines() if l.startswith('Uid:')][0].split()[1:] == [sys.argv[2]]*4
+assert s['supervisor']['desired_revision']==s['supervisor']['applied_revision']
+PY
+# No HTTP_PROXY/ALL_PROXY variables: successful and rejected traffic must follow TUN rules.
+run_in python3 "$work/check-tun-traffic.py" tun
+firewall_pid=$(state_val "s['pid']")
+ip netns exec "$ns" nft delete table inet omash_test_firewall
+load_test_firewall
+for _ in {1..30}; do
+  if ip netns exec "$ns" nft list table inet omash_test_firewall | grep "omash-tun:$uid:input" >/dev/null; then break; fi
+  sleep .2
+done
+ip netns exec "$ns" nft list table inet omash_test_firewall | grep "omash-tun:$uid:input" >/dev/null || fail 'firewall reload was not healed'
+[[ $(state_val "s['pid']") == "$firewall_pid" ]] || fail 'firewall reload restarted Mihomo'
+run_in python3 "$work/check-tun-traffic.py" tun
+echo 'PASS: default-deny input and firewall reload recovery without a core restart'
+[[ $(run_in dig +time=3 +tries=1 +short @203.0.113.53 fixture.test A) == 198.51.100.1 ]]
+[[ $(run_in dig +tcp +time=3 +tries=1 +short @203.0.113.53 fixture.test AAAA) == 2001:db8:241::1 ]]
+ip -n "$ns" -s link show omash-tun > "$work/tun-counters.txt"
+echo 'PASS: non-root capabilities and syscall filter, TCP/UDP/IPv4/IPv6, UDP/TCP DNS interception and TUN routing'
+# C11: an idle supervisor must not rewrite its state file (it used to fsync it every second).
+sleep 2
+idle_before=$(stat -c '%i %y' "$state_file")
+sleep 5
+idle_after=$(stat -c '%i %y' "$state_file")
+[[ $idle_before == "$idle_after" ]] || fail "the idle supervisor rewrote its state file ($idle_before -> $idle_after)"
+echo 'PASS: an idle supervisor leaves its state file alone'
+# Change the ordinary uplink while TUN is active; existing unrelated interfaces/rules survive.
+ip link add eth1 netns "$ns" type veth peer name eth1 netns "$peer"
+ip -n "$ns" addr add 10.242.1.2/24 dev eth1
+ip -n "$peer" addr add 10.242.1.1/24 dev eth1
+ip -n "$ns" link set eth1 up
+ip -n "$peer" link set eth1 up
+ip -n "$ns" route replace default via 10.242.1.1 dev eth1
+switched=false
+for _ in {1..10}; do
+  if [[ $(run_in curl --noproxy '*' -fsS --max-time 2 http://198.51.100.1:18080/ 2>/dev/null) == omash-fixture ]]; then switched=true; break; fi
+  sleep .3
+done
+[[ $switched == true ]]
+ip -n "$ns" route replace default via 10.241.1.1 dev eth0
+ip -n "$ns" link del eth1
+echo 'PASS: active TUN survives an uplink change'
+# TUN is independent of Rule/Global/Direct; toggling it must preserve a live mode selection.
+api PATCH /configs '{"mode":"global"}'
+run_in "$home/omash" tun off
+[[ $(live_mode) == global ]] || fail 'TUN toggle reset routing mode'
+run_in "$home/omash" tun on
+[[ $(live_mode) == global ]] || fail 'TUN toggle reset routing mode'
+api PATCH /configs '{"mode":"rule"}'
+# C5: a selection-only change must reload the running core instead of restarting it, also after the
+# routing mode was switched through the API (the live mode must survive the reload).
+reload_check() { # label
+  local label=$1 backend restarts reloads pid generation='' ifindex=''
+  backend=$(state_val "s['backend']")
+  restarts=$(state_val "s['restarts']")
+  reloads=$(state_val "s['reloads']")
+  pid=$(state_val "s['pid']")
+  if [[ $backend == service ]]; then
+    generation=$(status_val "s['helper']['generation']")
+    ifindex=$(tun_ifindex)
+  fi
+  api PATCH /configs '{"mode":"global"}'
+  [[ $(live_mode) == global ]] || fail "$label: the API mode switch did not apply"
+  run_in "$home/omash" bar proxy Select REJECT
+  wait_state 20 "$label: reload for the selection-only change" "s['reloads'] > $reloads and s['applied_revision'] == s['desired_revision']"
+  require_state "$label: the selection-only change restarted or broke the core" "s['restarts'] == $restarts and s['pid'] == $pid and s['running'] and not s['error'] and s['backend'] == '$backend'"
+  [[ $(live_mode) == global ]] || fail "$label: the reload lost the live routing mode"
+  if [[ $backend == service ]]; then
+    status_ok "s['helper']['pid'] == $pid and s['helper']['generation'] == $generation and s['helper']['tun_active']" || fail "$label: the helper restarted its core or changed generation"
+    [[ $(tun_ifindex) == "$ifindex" ]] || fail "$label: the TUN device was recreated"
+  fi
+  api PATCH /configs '{"mode":"rule"}'
+  run_in "$home/omash" bar proxy Select DIRECT
+  wait_state 20 "$label: reload after restoring the selection" "s['reloads'] > $((reloads + 1)) and s['applied_revision'] == s['desired_revision']"
+  [[ $(live_mode) == rule ]] || fail "$label: routing mode was not restored"
+}
+reload_check 'C5 TUN backend'
+run_in "$home/omash" tun off
+reload_check 'C5 Direct backend'
+echo 'PASS: selection-only changes reload instead of restarting (TUN and Direct), keeping live mode, helper generation and TUN device'
+# C10: exactly one `mihomo -t` per switch (it used to be three for Direct -> Service).
+# C9: last-good.yaml is never written.
+expect_validations 1 'Direct->Service switch' run_in "$home/omash" tun on
+sed -i 's/mtu: 1500/mtu: 1450/' "$data/profiles/test.yaml"
+expect_validations 1 'Service->Service apply' run_in "$home/omash" tun on
+ip -n "$ns" -j link show omash-tun | json_ok "s[0]['mtu'] == 1450" || fail 'the Service->Service apply did not change the TUN MTU'
+cp "$work/good.yaml" "$data/profiles/test.yaml"; chown "$uid:$gid" "$data/profiles/test.yaml"
+expect_validations 1 'Service->Service apply (restore)' run_in "$home/omash" tun on
+expect_validations 1 'Service->Direct switch' run_in "$home/omash" tun off
+expect_validations 1 'Direct->Service switch (again)' run_in "$home/omash" tun on
+[[ ! -e $data/tun-service/last-good.yaml ]] || fail 'last-good.yaml was written'
+echo 'PASS: one core validation per switch (Direct->Service, Service->Service, Service->Direct); no last-good.yaml'
+# Invalid edits must leave the applied runtime and active generation untouched.
+cp "$data/runtime.yaml" "$work/applied.yaml"
+run_in sh -c 'printf "tun: {stack: invalid-stack}\n" > "$HOME/.local/share/omash/profiles/test.yaml"'
+if run_in "$home/omash" tun on > "$work/invalid.log" 2>&1; then echo 'invalid config accepted' >&2; exit 1; fi
+cmp "$data/runtime.yaml" "$work/applied.yaml"
+# C8: the core's own reason must reach the user, not just a pointer to the validation log.
+grep -Eq 'core rejected configuration: [^ ;]' "$work/invalid.log" || fail "validation error has no reason: $(tail -n 3 "$work/invalid.log")"
+! grep -q 'core rejected configuration; see' "$work/invalid.log" || fail 'the validation error is still the bare "core rejected configuration; see ..."'
+run_in "$home/omash" tun status > "$work/after-invalid.json"
+python3 - "$work/after-invalid.json" <<'PY'
+import json,sys
+s=json.load(open(sys.argv[1])); assert s['active']; assert s['supervisor']['error']; assert s['supervisor']['applied_revision']!=s['supervisor']['desired_revision']
+PY
+run_in python3 "$work/check-tun-ui.py" "$home/omash" 'core rejected'
+ip -n "$ns" link show omash-tun >/dev/null
+cp "$work/good.yaml" "$data/profiles/test.yaml"; chown "$uid:$gid" "$data/profiles/test.yaml"
+run_in "$home/omash" tun on
+echo 'PASS: a rejected configuration reports the core reason and leaves the running core untouched'
+# A running core may only exclude its own exact rules, even when Apply changes indices.
+for conflict in table priority active-rule active-route; do
+  run_in "$home/omash" tun status > "$work/before-conflict.json"
+  cp "$data/runtime.yaml" "$work/before-conflict.yaml"
+  case $conflict in
+    table) sed -i '/  mtu: 1500/a\  iproute2-table-index: 199' "$data/profiles/test.yaml" ;;
+    priority) sed -i '/  mtu: 1500/a\  iproute2-rule-index: 20000' "$data/profiles/test.yaml" ;;
+    active-rule)
+      ip -n "$ns" -6 rule add priority 9001 to 2001:db8:ffff::/64 table 199
+      sed -i 's/mtu: 1500/mtu: 1450/' "$data/profiles/test.yaml" ;;
+    active-route)
+      ip -n "$ns" route add 203.0.113.64/26 dev vpn-test table 2022
+      sed -i 's/mtu: 1500/mtu: 1450/' "$data/profiles/test.yaml" ;;
+  esac
+  if run_in "$home/omash" tun on > "$work/conflict-$conflict.log" 2>&1; then echo "running Apply accepted $conflict conflict" >&2; exit 1; fi
+  run_in "$home/omash" tun status > "$work/after-conflict.json"
+  python3 - "$work/before-conflict.json" "$work/after-conflict.json" <<'PY'
+import json,sys
+before,after=(json.load(open(p)) for p in sys.argv[1:])
+assert after['active'] and after['supervisor']['error']
+for key in ('pid','revision','generation'): assert before['helper'][key]==after['helper'][key], key
+assert before['supervisor']['applied_revision']==after['supervisor']['applied_revision']
+PY
+  cmp "$work/before-conflict.yaml" "$data/runtime.yaml"
+  ip -n "$ns" rule show | grep '20000:.*lookup 199' >/dev/null
+  ip -n "$ns" route show table 199 | grep 'blackhole 203.0.113.128/25' >/dev/null
+  case $conflict in
+    active-rule)
+      ip -n "$ns" -6 rule show | grep '9001:.*lookup 199' >/dev/null
+      ip -n "$ns" -6 rule del priority 9001 to 2001:db8:ffff::/64 table 199 ;;
+    active-route)
+      ip -n "$ns" route show table 2022 | grep '203.0.113.64/26 dev vpn-test' >/dev/null
+      ip -n "$ns" route del 203.0.113.64/26 dev vpn-test table 2022 ;;
+  esac
+  cp "$work/good.yaml" "$data/profiles/test.yaml"; chown "$uid:$gid" "$data/profiles/test.yaml"
+  run_in "$home/omash" tun on
+done
+echo 'PASS: running Apply rejects foreign tables, priorities and added rules/routes without stopping the core'
+# C6: kill -9 of the helper's Mihomo leaves its policy rules behind. The helper must recognise them as its
+# own so the supervisor's normal retry brings TUN back (it used to fail forever with "conflicts with
+# existing rules").
+run_in "$home/omash" tun status > "$work/c6-before.json"
+mpid=$(json_val "s['helper']['pid']" < "$work/c6-before.json")
+ip -n "$ns" -4 rule show | sort > "$work/c6-rules4.before"
+ip -n "$ns" -6 rule show | sort > "$work/c6-rules6.before"
+killed_at=$SECONDS
+kill -9 "$mpid"
+residue=$(ip -n "$ns" -4 rule show | grep -c 'lookup 2022' || true)
+echo "C6: killed Mihomo pid $mpid; $residue IPv4 rules still point at table 2022 right after the kill (informational)"
+wait_state 30 'TUN restored by the automatic retry after kill -9' "s['tun_active'] and s['running'] and s['pid'] != $mpid and not s['error'] and s['applied_revision'] == s['desired_revision']"
+echo "C6: TUN active again $((SECONDS - killed_at))s after the kill"
+diff -u "$work/c6-rules4.before" <(ip -n "$ns" -4 rule show | sort)
+diff -u "$work/c6-rules6.before" <(ip -n "$ns" -6 rule show | sort)
+run_in python3 "$work/check-tun-traffic.py" tun
+echo 'PASS: kill -9 of Mihomo self-heals: the residue rules are removed and the same rule set returns'
+# C6 safety: rules the helper does not own must never be deleted. Pause the supervisor so that nothing
+# retries, kill Mihomo, plant a foreign rule at a residue priority, then let the supervisor try again.
+mpid=$(status_val "s['helper']['pid']")
+sup=$(run_in systemctl --user show -p MainPID --value omash-supervisor.service)
+[[ $sup =~ ^[0-9]+$ && $sup -gt 1 ]] || fail "cannot find the supervisor main PID (got '$sup')"
+paused_pid=$sup
+kill -STOP "$sup"
+kill -9 "$mpid"
+sleep 1
+residue=$(ip -n "$ns" -4 rule show | grep -c 'lookup 2022' || true)
+foreign_checked=false
+if ((residue == 0)); then
+  echo 'NOTE: kill -9 left no IPv4 residue (the helper heals eagerly?); skipping the foreign-rule check'
+  kill -CONT "$sup"; paused_pid=
+  wait_state 30 'TUN restored after the second kill -9' "s['tun_active'] and s['running'] and s['pid'] != $mpid and not s['error'] and s['applied_revision'] == s['desired_revision']"
+else
+  ip -n "$ns" rule add priority 9001 to 203.0.113.200/32 table 199
+  ip -n "$ns" -4 rule show | sort > "$work/c6-rules4.planted"
+  run_in "$home/omash" tun doctor > "$work/c6-doctor.txt" 2>&1
+  diff -u "$work/c6-rules4.planted" <(ip -n "$ns" -4 rule show | sort) || fail 'omash tun doctor changed policy rules'
+  kill -CONT "$sup"; paused_pid=
+  wait_state 20 'a conflict error instead of deleting rules that are not ours' "'conflicts with existing rules' in (s['error'] or '') and not s['tun_active']"
+  diff -u "$work/c6-rules4.planted" <(ip -n "$ns" -4 rule show | sort) || fail 'the helper deleted IPv4 rules although a foreign rule shares their priorities'
+  ip -n "$ns" rule del priority 9001 to 203.0.113.200/32 table 199
+  foreign_checked=true
+  run_in "$home/omash" tun on
+fi
+require_state 'TUN did not return once the foreign rule was gone' "s['tun_active'] and s['running'] and not s['error'] and s['applied_revision'] == s['desired_revision']"
+diff -u "$work/c6-rules4.before" <(ip -n "$ns" -4 rule show | sort)
+diff -u "$work/c6-rules6.before" <(ip -n "$ns" -6 rule show | sort)
+run_in python3 "$work/check-tun-traffic.py" tun
+if [[ $foreign_checked == true ]]; then
+  echo 'PASS: leftover rules sharing a priority with a foreign rule are not deleted; TUN returns once the conflict is gone'
+fi
+# C7: with the default fake-ip DNS an address handed out before a core restart must still work after it.
+sed '/enhanced-mode: redir-host/d' "$work/good.yaml" > "$data/profiles/test.yaml"
+run_in "$home/omash" tun on
+grep -q 'enhanced-mode: fake-ip' "$data/runtime.yaml" || fail 'the variant profile did not default to fake-ip'
+grep -q 'store-fake-ip: true' "$data/runtime.yaml" || fail 'fake-ip mappings are not stored across restarts'
+fake_ip=$(run_in dig +time=3 +tries=1 +short @203.0.113.53 fixture.test A || true)
+[[ $fake_ip =~ ^198\.18\.[0-9]+\.[0-9]+$ ]] || fail "expected a fake-ip answer for fixture.test, got '$fake_ip'"
+[[ $(run_in curl --noproxy '*' -fsS --max-time 5 "http://$fake_ip:18080/") == omash-fixture ]] || fail "fake IP $fake_ip does not work before the restart"
+fake_pid=$(state_val "s['pid']")
+sed -i 's/mtu: 1500/mtu: 1450/' "$data/profiles/test.yaml"
+run_in "$home/omash" tun on
+[[ $(state_val "s['pid']") != "$fake_pid" ]] || fail 'the MTU change did not restart the core'
+[[ $(run_in curl --noproxy '*' -fsS --max-time 5 "http://$fake_ip:18080/") == omash-fixture ]] || fail "fake IP $fake_ip stopped working after the core restart"
+cp "$work/good.yaml" "$data/profiles/test.yaml"; chown "$uid:$gid" "$data/profiles/test.yaml"
+run_in "$home/omash" tun on
+echo 'PASS: fake-IP mappings survive a core restart'
+# A second same-UID client cannot replace the active supervisor's generation.
+run_in python3 - "$data/runtime.yaml" <<'PY'
+import json,socket,struct,sys
+path='/run/omash-tun/control.sock'
+def read(s):
+ b=s.recv(4); assert len(b)==4
+ n=struct.unpack('!I',b)[0]; data=b''
+ while len(data)<n: data+=s.recv(n-len(data))
+ return json.loads(data)
+def send(s,obj):
+ b=json.dumps(obj).encode(); s.sendall(struct.pack('!I',len(b))+b); return read(s)
+s=socket.socket(socket.AF_UNIX); s.connect(path)
+r=send(s,dict(version=2,id='second',action=dict(command='start',yaml=open(sys.argv[1]).read(),validate_only=False)))
+assert 'another supervisor' in r['error'] and r['status']['running']; s.close()
+s=socket.socket(socket.AF_UNIX); s.connect(path)
+r=send(s,dict(version=999,id='version',action=dict(command='hello'))); assert 'protocol mismatch' in r['error']; s.close()
+s=socket.socket(socket.AF_UNIX); s.connect(path); s.settimeout(3); s.sendall(struct.pack('!I',16*1024*1024+1))
+try: assert s.recv(1)==b''
+except ConnectionResetError: pass
+s.close()
+PY
+# Root can reach the socket path, but is not the registered peer UID.
+python3 - <<'PY'
+import socket
+s=socket.socket(socket.AF_UNIX); s.connect('/run/omash-tun/control.sock'); s.settimeout(3)
+assert s.recv(1)==b''
+PY
+# Force failure after validation, both within the service and across Direct -> Service. The helper's
+# revision and generation must not move when a service-to-service apply is rolled back.
+for previous_backend in service direct; do
+  if [[ $previous_backend == direct ]]; then run_in "$home/omash" tun off; fi
+  cp "$data/runtime.yaml" "$work/before-port.yaml"
+  run_in "$home/omash" tun status > "$work/port-$previous_backend.before.json"
+  ip netns exec "$ns" python3 -c 'import socket,time; s=socket.socket(); s.bind(("127.0.0.1",17899)); s.listen(); time.sleep(120)' &
+  blocker_pid=$!
+  sleep .3
+  sed -i 's/mixed_port = 17897/mixed_port = 17899/' "$home/.config/omash/config.toml"
+  if run_in "$home/omash" tun on > "$work/port-$previous_backend.log" 2>&1; then echo 'port conflict accepted' >&2; exit 1; fi
+  cmp "$data/runtime.yaml" "$work/before-port.yaml"
+  run_in "$home/omash" tun status > "$work/port-$previous_backend.json"
+  python3 - "$work/port-$previous_backend.before.json" "$work/port-$previous_backend.json" "$previous_backend" <<'PY'
+import json,sys
+before,after=(json.load(open(p)) for p in sys.argv[1:3])
+backend=sys.argv[3]
+s=after['supervisor']; assert s['running'] and s['backend']==backend and s['error']
+assert s['applied_revision']!=s['desired_revision']
+if backend=='service':
+    assert after['active'] and s['tun_active'], 'the previous TUN generation was not restored'
+    for key in ('revision','generation'): assert before['helper'][key]==after['helper'][key], key
+PY
+  kill "$blocker_pid"; wait "$blocker_pid" || true; blocker_pid=
+  sed -i 's/mixed_port = 17899/mixed_port = 17897/' "$home/.config/omash/config.toml"
+  run_in "$home/omash" tun on
+done
+echo 'PASS: real peer UID, protocol/size boundaries, second-owner rejection and service/cross-backend rollback'
+# Read-only clients (the TUI/status/doctor) must never own or release the supervisor lease.
+run_in "$home/omash" tun status > /dev/null
+run_in "$home/omash" tun doctor > "$work/doctor.txt"
+! grep -q 'local-integration-test-only' "$work/doctor.txt" || fail 'omash tun doctor printed the controller secret'
+ip -n "$ns" link show omash-tun > /dev/null
+run_in systemctl --user kill --signal=SIGKILL omash-supervisor.service
+for _ in {1..100}; do if ! ip -n "$ns" link show omash-tun >/dev/null 2>&1; then break; fi; sleep .2; done
+! ip -n "$ns" link show omash-tun >/dev/null 2>&1 || fail 'the TUN device survived the loss of the supervisor lease'
+run_in "$home/omash" tun on
+run_in "$home/omash" tun off
+! ip -n "$ns" link show omash-tun >/dev/null 2>&1 || fail 'the TUN device still exists after tun off'
+if ip netns exec "$ns" nft list table inet omash_test_firewall | grep "omash-tun:$uid:input" >/dev/null; then fail 'tun off left a firewall exception'; fi
+ip netns exec "$ns" nft list table inet omash_test_firewall | grep 'policy drop' >/dev/null || fail 'the helper changed the firewall policy'
+run_in python3 "$work/check-tun-traffic.py" direct
+ip -n "$ns" -4 rule show > "$work/rules4.after"
+ip -n "$ns" -6 rule show > "$work/rules6.after"
+cmp "$work/rules4.before" "$work/rules4.after"
+cmp "$work/rules6.before" "$work/rules6.after"
+ip -n "$ns" link show docker-test >/dev/null
+ip -n "$ns" link show vpn-test >/dev/null
+ip -n "$ns" route show table 199 | grep 'blackhole 203.0.113.128/25' >/dev/null
+# A foreign routing table must be rejected before stopping the direct core.
+ip -n "$ns" route add blackhole 203.0.113.64/26 table 2022
+if run_in "$home/omash" tun on > "$work/table-conflict.log" 2>&1; then echo 'foreign table accepted' >&2; exit 1; fi
+ip -n "$ns" route show table 2022 | grep 'blackhole 203.0.113.64/26' >/dev/null
+ip -n "$ns" route del blackhole 203.0.113.64/26 table 2022
+run_in "$home/omash" tun off
+echo 'PASS: existing bridge, VPN and policy routes preserved; conflicting table rejected'
+
+# C1: a failure on the very first attempt after a supervisor start must be retried automatically
+# (it used to stay down until the next explicit request).
+run_in systemctl --user stop omash-supervisor.service
+ip netns exec "$ns" python3 -c 'import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1",19090)); s.listen(); time.sleep(300)' &
+blocker_pid=$!
+sleep .5
+run_in systemctl --user start omash-supervisor.service
+wait_state 15 'the first start failing while the controller port is busy' "not s['running'] and 'in use' in (s['error'] or '')"
+kill "$blocker_pid"; wait "$blocker_pid" || true; blocker_pid=
+wait_state 25 'the automatic retry after the port was freed' "s['running'] and s['backend'] == 'direct' and not s['error'] and s['applied_revision'] == s['desired_revision']"
+api GET /version > /dev/null
+echo 'PASS: a failed first start is retried automatically once the cause is gone'
+# C4: an unrelated failure while TUN is off is not a TUN failure, and a failed request is not retried
+# while a core keeps running.
+sed -i 's/^mode: rule/mode: invalid-mode/' "$data/profiles/test.yaml"
+wait_state 20 'the invalid profile being rejected' "s['error'] and s['attempted_revision'] == s['desired_revision'] and s['applied_revision'] != s['desired_revision']"
+validation_lines=$(wc -l < "$data/logs/core-validation.log")
+require_state 'TUN must read disabled (not failed) while it is off' "s['tun_state'] == 'disabled' and not s['tun_desired'] and s['running'] and s['backend'] == 'direct'"
+run_in python3 "$work/check-tun-ui.py" "$home/omash" 'off / disabled' 'core rejected'
+sleep 8
+[[ $(wc -l < "$data/logs/core-validation.log") == "$validation_lines" ]] || fail 'the rejected revision was retried while a core was running'
+cp "$work/good.yaml" "$data/profiles/test.yaml"; chown "$uid:$gid" "$data/profiles/test.yaml"
+wait_state 20 'recovery after the profile was fixed' "not s['error'] and s['running'] and s['tun_state'] == 'disabled' and s['applied_revision'] == s['desired_revision']"
+echo 'PASS: unrelated failures leave TUN disabled while it is off and are not retried'
+# The README path: Settings -> Mihomo TUN -> Enter in the real TUI. Like `omash tun on`, turning TUN on
+# there also starts a core that was stopped.
+run_in "$home/omash" stop > /dev/null
+wait_state 20 'the core stopped before the Settings toggle' "not s['running'] and s['backend'] is None and s['applied_revision'] == s['desired_revision']"
+run_in python3 "$work/check-tun-toggle.py" "$home/omash" on
+wait_state 60 'TUN active after the Settings toggle' "s['running'] and s['tun_active'] and s['backend'] == 'service' and not s['error'] and s['applied_revision'] == s['desired_revision']"
+sleep 3
+status_ok "s['desired'] and s['active'] and s['supervisor']['tun_active']" || fail 'TUN did not persist after the TUI exited'
+run_in python3 "$work/check-tun-traffic.py" tun
+run_in python3 "$work/check-tun-toggle.py" "$home/omash" off
+wait_state 30 'the ordinary proxy after turning TUN off in Settings' "not s['tun_active'] and s['backend'] == 'direct' and s['running'] and not s['error'] and s['tun_state'] == 'disabled' and s['applied_revision'] == s['desired_revision']"
+echo 'PASS: the TUI Settings toggle enables and disables TUN and leaves it running after the TUI exits'
+# C3/C1/C2: with the helper down the supervisor must still provide an ordinary proxy, and must return
+# to TUN by itself once the helper answers.
+run_in "$home/omash" tun status --check-helper
+run_in systemctl --user stop omash-supervisor.service
+systemctl stop omash-tun.service
+if run_in "$home/omash" tun status --check-helper > "$work/check-helper-down.log" 2>&1; then echo 'a stopped helper was reported as available' >&2; exit 1; fi
+grep -q 'TUN helper unavailable; run `omash tun setup`' "$work/check-helper-down.log"
+sed -i 's/^tun_enabled = .*/tun_enabled = true/' "$home/.config/omash/config.toml"
+run_in systemctl --user start omash-supervisor.service
+wait_state 15 'an ordinary proxy while the helper is down' "s['running'] and s['backend'] == 'direct' and not s['tun_active'] and s['tun_state'] == 'unavailable' and 'helper unavailable' in (s['error'] or '') and 'without TUN' in (s['error'] or '') and s['applied_revision'] != s['desired_revision']"
+[[ $(via_proxy http://198.51.100.1:18080/) == omash-fixture ]] || fail 'the fallback proxy did not carry traffic'
+run_in python3 "$work/check-tun-ui.py" "$home/omash" 'on / unavailable'
+systemctl start omash-tun.service
+wait_state 60 'the automatic return to TUN once the helper answers' "s['backend'] == 'service' and s['tun_active'] and s['tun_state'] == 'active' and not s['error'] and s['applied_revision'] == s['desired_revision']"
+run_in python3 "$work/check-tun-traffic.py" tun
+echo 'PASS: a helper outage falls back to an ordinary proxy and returns to TUN automatically'
+
+# Direct core survives TUN-off; upgrade the helper through the public setup path, then enable again.
+run_in "$home/omash" tun off
+# A change after the request (a node selection, a profile update) gives the supervisor a newer
+# revision than the one `omash tun on` asked for; the command must follow it instead of timing out.
+supersede "$work/superseded-on.log" "$home/omash" tun on
+followed "$work/superseded-on.log" || fail 'omash tun on did not follow the revision that superseded its own'
+grep -q 'TUN active (applied revision' "$work/superseded-on.log" || fail 'omash tun on did not report TUN active'
+require_state 'TUN active after following a later revision' "s['tun_active'] and s['backend'] == 'service' and not s['error'] and s['applied_revision'] == s['desired_revision']"
+run_in "$home/omash" tun off
+helper_main=$(systemctl show -p MainPID --value omash-tun.service)
+supervisor_main=$(run_in systemctl --user show -p MainPID --value omash-supervisor.service)
+[[ $supervisor_main =~ ^[0-9]+$ && $supervisor_main -gt 1 ]] || fail "cannot find the supervisor main PID (got '$supervisor_main')"
+# Setup runs sudo for exactly one command and the later uninstall for another; authorize only those two.
+{
+  printf '%s ALL=(root) NOPASSWD: %s internal-tun-install %s %s %s %s\n' "$user" "$work/omash" "$uid" "$gid" "$data" "$hash"
+  printf '%s ALL=(root) NOPASSWD: %s internal-tun-uninstall %s\n' "$user" "$work/omash" "$uid"
+} > "$sudoers"
+sudoers_installed=true
+chmod 440 "$sudoers"
+visudo -cf "$sudoers"
+# (A pty makes setup choose sudo even where pkexec exists; a sudoers mismatch would wait for a password, hence the timeout.)
+run_in timeout --foreground 180 script -q -e -c "'$work/omash' tun setup" /dev/null > "$work/setup.log" 2>&1 || { cat "$work/setup.log" >&2; exit 1; }
+grep -q 'TUN helper installed for UID' "$work/setup.log"
+[[ $(systemctl show -p MainPID --value omash-tun.service) != "$helper_main" ]] || fail 'omash tun setup did not replace the running helper'
+[[ $(run_in systemctl --user show -p MainPID --value omash-supervisor.service) == "$supervisor_main" ]] || fail 'omash tun setup restarted a supervisor that runs the installed binary'
+# An upgrade installs a new client binary under the running supervisor, which keeps the old build, and
+# with it the old helper protocol, until it is restarted. The installer leaves that restart to setup.
+install -o "$uid" -g "$gid" -m755 "$binary" "$home/omash"
+[[ $(readlink "/proc/$supervisor_main/exe") == *' (deleted)' ]] || fail 'replacing the client did not leave the supervisor on a deleted binary'
+run_in timeout --foreground 180 script -q -e -c "'$work/omash' tun setup" /dev/null > "$work/setup-upgrade.log" 2>&1 || { cat "$work/setup-upgrade.log" >&2; exit 1; }
+restarted=$(run_in systemctl --user show -p MainPID --value omash-supervisor.service)
+[[ $restarted =~ ^[0-9]+$ && $restarted -gt 1 && $restarted != "$supervisor_main" ]] || fail 'omash tun setup did not restart a supervisor running a replaced binary'
+[[ $(readlink "/proc/$restarted/exe") != *' (deleted)' ]] || fail 'the restarted supervisor still runs a deleted binary'
+grep -q 'Restarted the supervisor' "$work/setup-upgrade.log" || fail 'omash tun setup did not report the supervisor restart'
+run_in "$home/omash" tun on
+echo 'PASS: omash tun setup upgrades the helper through a sudoers-authorized exact command and restarts a supervisor left on a replaced binary'
+# Exercise public uninstall while TUN is active, including a failed switch to Direct.
+sed -i 's/mode: rule/mode: invalid-mode/' "$data/profiles/test.yaml"
+if run_in script -q -e -c "'$work/omash' tun uninstall" /dev/null > "$work/uninstall-failure.log" 2>&1; then echo 'uninstall ignored failed Direct switch' >&2; exit 1; fi
+[[ -e /etc/omash-tun.json && -e /usr/local/libexec/omash-tun-service ]]
+run_in "$home/omash" tun status > "$work/uninstall-failure.json"
+python3 - "$work/uninstall-failure.json" <<'PY'
+import json,sys
+s=json.load(open(sys.argv[1])); assert s['active'] and s['supervisor']['backend']=='service' and s['supervisor']['error']
+PY
+cp "$work/good.yaml" "$data/profiles/test.yaml"; chown "$uid:$gid" "$data/profiles/test.yaml"
+run_in "$home/omash" tun on
+# Only the helper retries a failed removal of its firewall exception, so uninstall must keep it until the
+# removal is confirmed. The helper runs as the test user: making nft executable by root only breaks its
+# nft calls, while this script (root) can still list the rules. Cleanup restores the mode if needed.
+ip netns exec "$ns" nft list table inet omash_test_firewall | grep "omash-tun:$uid:input" >/dev/null || fail 'no firewall exception before the failing uninstall'
+nft_restore_mode=$(stat -c %a "$nft_program")
+chmod 0700 "$nft_program"
+if run_in script -q -e -c "'$work/omash' tun uninstall" /dev/null > "$work/uninstall-firewall.log" 2>&1; then fail 'uninstall removed a helper that could not remove its firewall exception'; fi
+grep -q 'could not remove its firewall exceptions' "$work/uninstall-firewall.log" || fail "uninstall failed for another reason: $(tr -d '\r' < "$work/uninstall-firewall.log" | tail -n 3)"
+[[ -e /etc/omash-tun.json && -e /usr/local/libexec/omash-tun-service ]] || fail 'uninstall removed the helper although it could not remove its firewall exception'
+ip netns exec "$ns" nft list table inet omash_test_firewall | grep "omash-tun:$uid:input" >/dev/null || fail 'the firewall exception vanished although the helper could not run nft'
+status_ok "s['helper']['firewall_error'] and not s['active'] and s['supervisor']['backend'] == 'direct'" || fail 'the kept helper does not report its firewall error'
+chmod "$nft_restore_mode" "$nft_program"
+nft_restore_mode=
+# The helper retries every two seconds.
+for _ in {1..50}; do
+  if ! ip netns exec "$ns" nft list table inet omash_test_firewall | grep "omash-tun:$uid:input" >/dev/null; then break; fi
+  sleep .2
+done
+if ip netns exec "$ns" nft list table inet omash_test_firewall | grep "omash-tun:$uid:input" >/dev/null; then fail 'the kept helper did not remove its exception once nft worked again'; fi
+echo 'PASS: uninstall keeps a helper that cannot remove its firewall exception, and the helper removes it once nft works again'
+# Also uninstall follows a revision that superseded its own instead of timing out and keeping the helper.
+supersede "$work/uninstall-success.log" script -q -e -c "'$work/omash' tun uninstall" /dev/null
+followed "$work/uninstall-success.log" || fail 'omash tun uninstall did not follow the revision that superseded its own'
+helper_installed=false
+[[ ! -e /etc/omash-tun.json && ! -e /usr/local/libexec/omash-tun-service ]]
+run_in "$home/omash" tun status > "$work/uninstall-success.json"
+python3 - "$work/uninstall-success.json" <<'PY'
+import json,sys
+s=json.load(open(sys.argv[1])); v=s['supervisor']
+assert not s['desired'] and not s['active'] and v['running'] and v['backend']=='direct'
+assert not v['tun_active'] and not v['error'] and v['desired_revision']==v['applied_revision']
+PY
+[[ $(via_proxy http://198.51.100.1:18080/) == omash-fixture ]]
+rm "$sudoers"
+sudoers_installed=false
+echo 'PASS: live uninstall waits for Direct; a failed switch preserves the active helper'
+echo 'PASS: omash tun on and uninstall follow a revision that superseded theirs'
+# The README path for the first TUN start: Settings -> Mihomo TUN -> Enter offers to install the missing
+# helper and runs sudo in the same terminal. Cleanup removes whatever these scenarios install, whichever
+# step fails, so it is registered before the first of them.
+helper_installed=true
+password_file=$home/.sudo-test-password
+install -o "$uid" -g "$gid" -m600 /dev/null "$password_file"
+python3 -c 'import secrets; print(secrets.token_urlsafe(18))' > "$password_file"
+printf '%s:%s\n' "$user" "$(cat "$password_file")" | chpasswd
+# Only this exact command, and only with the test user's password.
+printf '%s ALL=(root) %s internal-tun-install %s %s %s %s\n' "$user" "$work/omash" "$uid" "$gid" "$data" "$hash" > "$sudoers"
+sudoers_installed=true
+chmod 440 "$sudoers"
+visudo -cf "$sudoers"
+# The TUI runs from $work/omash: setup elevates its own executable, the one the sudoers entry names.
+run_in python3 "$work/check-tun-setup-ui.py" "$work/omash" decline
+[[ ! -e /etc/omash-tun.json && ! -e /usr/local/libexec/omash-tun-service ]] || fail 'declining the installation in the TUI installed the helper'
+run_in python3 "$work/check-tun-setup-ui.py" "$work/omash" cancel
+[[ ! -e /etc/omash-tun.json && ! -e /usr/local/libexec/omash-tun-service ]] || fail 'a cancelled sudo prompt installed the helper'
+require_state 'TUN must stay off after a declined or failed installation' "not s['tun_desired'] and not s['tun_active'] and s['running'] and s['backend'] == 'direct'"
+run_in python3 "$work/check-tun-setup-ui.py" "$work/omash" install "$password_file"
+[[ -e /etc/omash-tun.json && -e /usr/local/libexec/omash-tun-service ]] || fail 'the TUI did not install the helper'
+wait_state 60 'TUN active after installing the helper from the TUI' "s['running'] and s['tun_active'] and s['backend'] == 'service' and not s['error'] and s['applied_revision'] == s['desired_revision']"
+run_in python3 "$work/check-tun-traffic.py" tun
+run_in "$home/omash" tun off
+rm "$sudoers" "$password_file"
+sudoers_installed=false
+echo 'PASS: the TUI asks before installing the helper, keeps TUN off when declined or when sudo fails, and installs it through sudo in the same terminal'
+# An explicitly supplied private profile can additionally exercise real remote proxies.
+# It stays in the test user's private home and is removed by cleanup, never printed.
+if [[ -n ${OMASH_TEST_PROFILE:-} ]]; then
+  command -v slirp4netns >/dev/null
+  run_in systemctl --user stop omash-supervisor.service
+  ip -n "$ns" route del default
+  ip -n "$ns" -6 route del default
+  slirp4netns --netns-type=path --configure --disable-host-loopback --mtu=1500 --ready-fd=3 "/run/netns/$ns" tap0 3> "$work/slirp.ready" > "$work/slirp.log" 2>&1 &
+  slirp_pid=$!
+  for _ in {1..100}; do [[ ! -s $work/slirp.ready ]] || break; sleep .1; done
+  [[ -s $work/slirp.ready ]]
+  install -o "$uid" -g "$gid" -m600 "$OMASH_TEST_PROFILE" "$data/profiles/test.yaml"
+  # Allow IPv4 fallback on a VM without native IPv6; dual-stack behavior was proven above.
+  run_in "$home/omash" tun on > "$work/private-result.txt" 2>&1 || { echo 'Private profile activation failed; details kept on test VM' >&2; exit 1; }
+  run_in curl --noproxy '*' -4 -fsS --max-time 45 https://www.gstatic.com/generate_204 -o /dev/null
+  # Match the exact socket tuple and require a remote leaf on that same TUN flow.
+  run_in python3 "$work/check-tun-traffic.py" remote
+  run_in "$home/omash" tun off > /dev/null
+fi
+run_in systemctl --user stop omash-supervisor.service
+SUDO_UID="$uid" "$binary" internal-tun-uninstall "$uid"
+helper_installed=false
+[[ ! -e /etc/omash-tun.json && ! -e /usr/local/libexec/omash-tun-service ]]
+[[ -e $data/profiles/test.yaml ]]
+snapshot_host > "$work/host.after"
+cmp "$work/host.before" "$work/host.after"
+passed=true
+echo 'PASS: all TUN checks, including reloads, crash recovery, fake-IP, retry and fallback, TUI toggle, real setup, invalid apply preservation, CLI failures, read-only status, lease loss, restart, off, upgrade/uninstall and host route preservation'

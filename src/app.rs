@@ -5,19 +5,62 @@ use crate::{
     core::{self, SupervisorState},
     profiles::Profiles,
     theme::Theme,
+    tun::toggle::{self, Decision, Progress, Setup},
     ui,
 };
 use anyhow::Result;
-use crossterm::event::{
-    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-    MouseEventKind,
+use crossterm::{
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+        MouseEventKind,
+    },
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use futures_util::StreamExt;
 use ratatui::{Terminal, backend::CrosstermBackend};
-use std::{cmp::min, collections::HashSet, io, path::PathBuf, process::Command, time::Instant};
+use std::{
+    cmp::min,
+    collections::HashSet,
+    io::{self, stdout},
+    path::{Path, PathBuf},
+    process::Command,
+    time::Instant,
+};
 use tokio::time;
 
-pub const SETTINGS_COUNT: usize = 6;
+type Screen = Terminal<CrosstermBackend<io::Stdout>>;
+
+pub fn setup_terminal() -> Result<Screen> {
+    enter_screen()?;
+    Ok(Terminal::new(CrosstermBackend::new(stdout()))?)
+}
+
+pub fn restore_terminal(terminal: &mut Screen) -> Result<()> {
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    )?;
+    terminal.show_cursor()?;
+    Ok(())
+}
+
+fn enter_screen() -> Result<()> {
+    enable_raw_mode()?;
+    execute!(
+        stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
+    Ok(())
+}
+
+pub const SETTINGS_COUNT: usize = 7;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
@@ -74,6 +117,8 @@ pub struct App {
     pub rule_index: usize,
     pub profile_index: usize,
     pub setting_index: usize,
+    /// The first visible row of each list, kept by `ui::draw` between frames.
+    pub offsets: ui::ListOffsets,
     pub node_focus: bool,
     pub status: String,
     pub online: bool,
@@ -84,6 +129,14 @@ pub struct App {
     pub input: Option<InputMode>,
     pub input_buffer: String,
     pub help_open: bool,
+    /// What the last Mihomo TUN action led to; kept until the next one.
+    pub tun_notice: Option<String>,
+    tun_request: Option<toggle::Request>,
+    /// A helper setup confirmed in the dialog, run by `run` outside the TUI's screen.
+    pending_setup: Option<Setup>,
+    /// Tests fix the platform and the look at the helper.
+    #[cfg(test)]
+    tun_fixture: Option<(bool, toggle::Helper)>,
     mouse_regions: Vec<ui::HitRegion>,
     last_click: Option<(ui::HitTarget, Instant)>,
 }
@@ -92,22 +145,41 @@ pub struct App {
 pub enum InputMode {
     ImportProfile,
     RestoreBackup(PathBuf),
+    InstallTunHelper(Setup),
 }
 
 impl App {
     pub fn new(config: Config) -> Result<Self> {
-        let api = MihomoClient::new(&config.controller, config.secret.clone())?;
         let profiles = Profiles::load()?;
+        Self::from_parts(
+            config,
+            profiles,
+            Config::proxy_group_order(),
+            Theme::load(),
+            core::supervisor_state(),
+            installed_package_version("clash-geoip"),
+        )
+    }
+
+    fn from_parts(
+        config: Config,
+        profiles: Profiles,
+        proxy_group_order: Vec<String>,
+        theme: Theme,
+        supervisor: SupervisorState,
+        geoip_version: String,
+    ) -> Result<Self> {
+        let api = MihomoClient::new(&config.controller, config.secret.clone())?;
         Ok(Self {
             config,
             api,
             snapshot: Snapshot::default(),
             profiles,
-            proxy_group_order: Config::proxy_group_order(),
-            theme: Theme::load(),
-            supervisor: core::supervisor_state(),
+            proxy_group_order,
+            theme,
+            supervisor,
             logs: vec![],
-            geoip_version: installed_package_version("clash-geoip"),
+            geoip_version,
             tab: Tab::default(),
             group_index: 0,
             node_index: 0,
@@ -115,6 +187,7 @@ impl App {
             rule_index: 0,
             profile_index: 0,
             setting_index: 0,
+            offsets: ui::ListOffsets::default(),
             node_focus: false,
             status: "Connecting…".into(),
             online: false,
@@ -125,15 +198,17 @@ impl App {
             input: None,
             input_buffer: String::new(),
             help_open: false,
+            tun_notice: None,
+            tun_request: None,
+            pending_setup: None,
+            #[cfg(test)]
+            tun_fixture: None,
             mouse_regions: Vec::new(),
             last_click: None,
         })
     }
 
-    pub async fn run(
-        &mut self,
-        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    ) -> Result<()> {
+    pub async fn run(&mut self, terminal: &mut Screen) -> Result<()> {
         self.refresh().await;
         let mut events = EventStream::new();
         let mut tick = time::interval(self.config.refresh_interval());
@@ -158,6 +233,19 @@ impl App {
                         None => break,
                         _ => {}
                     }
+                }
+            }
+            if let Some(setup) = self.pending_setup.take() {
+                // While it waits for input, crossterm's EventStream keeps a thread blocked on
+                // reading the terminal, which could take keys of sudo's password prompt. Dropping
+                // the stream wakes that thread and ends it.
+                drop(events);
+                let installed = install_outside(terminal, setup).await?;
+                events = EventStream::new();
+                tick.reset();
+                match installed {
+                    Ok(()) => self.apply_tun(true),
+                    Err(error) => self.notify_tun(toggle::setup_failed(&format!("{error:#}"))),
                 }
             }
         }
@@ -186,20 +274,32 @@ impl App {
                 self.move_selection(delta);
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                let Some(target) = target else { return };
-                let now = Instant::now();
-                let double_click = self.last_click.is_some_and(|(previous, then)| {
-                    previous == target && now.duration_since(then).as_millis() <= 400
-                });
-                self.last_click = if double_click {
-                    None
-                } else {
-                    Some((target, now))
+                let Some((target, double_click)) = self.click(mouse.column, mouse.row) else {
+                    return;
                 };
                 self.activate_mouse_target(target, double_click).await;
             }
             _ => {}
         }
+    }
+
+    /// The target under a left click, and whether the click completes a double-click on it.
+    fn click(&mut self, column: u16, row: u16) -> Option<(ui::HitTarget, bool)> {
+        let target = self
+            .mouse_regions
+            .iter()
+            .find(|region| region.contains(column, row))
+            .map(|region| region.target)?;
+        let now = Instant::now();
+        let double_click = self.last_click.is_some_and(|(previous, then)| {
+            previous == target && now.duration_since(then).as_millis() <= 400
+        });
+        self.last_click = if double_click {
+            None
+        } else {
+            Some((target, now))
+        };
+        Some((target, double_click))
     }
 
     fn focus_mouse_target(&mut self, target: ui::HitTarget) {
@@ -376,6 +476,9 @@ impl App {
         self.proxy_group_order = Config::proxy_group_order();
         self.update_due_profiles().await;
         self.supervisor = core::supervisor_state();
+        if let Some(tun_enabled) = Config::saved_tun_enabled() {
+            self.config.tun_enabled = tun_enabled;
+        }
         self.logs = core::CoreManager::recent_logs(200).unwrap_or_default();
         match self.api.snapshot().await {
             Ok(snapshot) => {
@@ -399,7 +502,11 @@ impl App {
                 self.last_refresh = Some(Instant::now());
                 self.snapshot = snapshot;
                 self.online = true;
-                self.status = "Synced".into();
+                self.status = self
+                    .supervisor
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Synced".into());
                 self.clamp_selections();
             }
             Err(error) => {
@@ -407,6 +514,7 @@ impl App {
                 self.status = self.offline_status(&error.to_string());
             }
         }
+        self.follow_tun_request();
     }
 
     fn offline_status(&self, api_error: &str) -> String {
@@ -582,6 +690,20 @@ impl App {
     }
 
     async fn handle_input(&mut self, key: KeyEvent) {
+        if let Some(InputMode::InstallTunHelper(setup)) = self.input.clone() {
+            match key.code {
+                KeyCode::Char('y' | 'Y') => {
+                    self.input = None;
+                    self.pending_setup = Some(setup);
+                }
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                    self.input = None;
+                    self.notify_tun(toggle::declined(setup).into());
+                }
+                _ => {}
+            }
+            return;
+        }
         if let Some(InputMode::RestoreBackup(path)) = self.input.clone() {
             match key.code {
                 KeyCode::Char('y' | 'Y') => {
@@ -768,6 +890,10 @@ impl App {
                 restart = true;
             }
             5 => {
+                self.toggle_tun().await;
+                return;
+            }
+            6 => {
                 self.config.refresh_ms = if self.config.refresh_ms >= 5000 {
                     500
                 } else {
@@ -787,6 +913,77 @@ impl App {
         self.status = "Setting saved".into();
     }
 
+    /// The Mihomo TUN switch, with the rules of `omash tun on/off`. Turning TUN on first offers to
+    /// install a missing or outdated helper; declining that leaves TUN off.
+    async fn toggle_tun(&mut self) {
+        self.tun_request = None;
+        self.tun_notice = None;
+        #[cfg(test)]
+        let fixture = self.tun_fixture;
+        #[cfg(not(test))]
+        let fixture: Option<(bool, toggle::Helper)> = None;
+        let enable = !self.config.tun_enabled;
+        let linux = fixture.map_or(cfg!(target_os = "linux"), |(linux, _)| linux);
+        let look = || async move {
+            match fixture {
+                Some((_, helper)) => helper,
+                None => look_at_helper().await,
+            }
+        };
+        match toggle::decide(linux, self.profiles.current_core(), enable, look).await {
+            Decision::Refuse(reason) => self.notify_tun(reason.into()),
+            Decision::Offer(setup) => self.input = Some(InputMode::InstallTunHelper(setup)),
+            Decision::Apply => self.apply_tun(enable),
+        }
+    }
+
+    fn apply_tun(&mut self, enable: bool) {
+        let previous = self.config.tun_enabled;
+        self.config.tun_enabled = enable;
+        if let Err(error) = self.config.save() {
+            self.config.tun_enabled = previous;
+            self.notify_tun(format!("Save failed: {error}"));
+            return;
+        }
+        // Turning TUN on also starts a core that was stopped, as `omash tun on` does.
+        let requested = if enable {
+            core::request_core_enabled(true)
+        } else {
+            core::request_restart()
+        };
+        if let Err(error) = requested {
+            self.notify_tun(format!("Saved, restart request failed: {error}"));
+            return;
+        }
+        self.tun_request = Some(toggle::Request::new(core::desired_revision(), enable));
+        self.notify_tun(toggle::APPLYING.into());
+    }
+
+    fn notify_tun(&mut self, message: String) {
+        self.status = message.clone();
+        self.tun_notice = Some(message);
+    }
+
+    /// Replaces "Applying TUN…" with the result once the supervisor has one. `refresh` has read
+    /// `tun_enabled` from config.toml already.
+    fn follow_tun_request(&mut self) {
+        let Some(request) = &mut self.tun_request else {
+            return;
+        };
+        if !request.follow(&core::desired_revision(), self.config.tun_enabled) {
+            self.tun_request = None;
+            self.notify_tun(toggle::SUPERSEDED.into());
+            return;
+        }
+        match request.progress(&self.supervisor) {
+            Progress::Pending => {}
+            Progress::Done(message) | Progress::Failed(message) => {
+                self.tun_request = None;
+                self.notify_tun(message);
+            }
+        }
+    }
+
     fn create_backup(&mut self) {
         match backup::create() {
             Ok(path) => self.status = format!("Backup created: {}", path.display()),
@@ -803,6 +1000,52 @@ impl App {
     }
 }
 
+/// One look at the helper before TUN is turned on, bounded by `toggle::HELPER_LOOK`.
+async fn look_at_helper() -> toggle::Helper {
+    if !Path::new(crate::tun::service::SETTINGS).exists() {
+        return toggle::classify(false, None);
+    }
+    // A second connection never owns the supervisor's lease; dropping it stops nothing.
+    let error =
+        match time::timeout(toggle::HELPER_LOOK, crate::tun::protocol::Client::connect()).await {
+            Ok(Ok(_)) | Err(_) => None,
+            Ok(Err(error)) => Some(error),
+        };
+    toggle::classify(true, error.as_ref())
+}
+
+/// Runs the helper setup in the normal screen, where sudo can ask for the password, and returns to
+/// the TUI's screen afterwards. Only an error of the terminal itself is returned as `Err`.
+async fn install_outside(terminal: &mut Screen, setup: Setup) -> Result<Result<()>> {
+    restore_terminal(terminal)?;
+    println!(
+        "{} the Mihomo TUN helper. sudo asks for your administrator password.",
+        match setup {
+            Setup::Install => "Installing",
+            Setup::Update => "Updating",
+        }
+    );
+    let installed = crate::tun::install::install_helper().await;
+    match &installed {
+        Ok(()) => println!("TUN helper installed. Returning to omash turns TUN on."),
+        Err(error) => eprintln!("TUN helper setup failed: {error:#}"),
+    }
+    println!("Press Enter to return to omash");
+    // Read in the normal (cooked) mode; Ctrl-C here ends omash, not the background supervisor.
+    let _ = tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        io::stdin().read_line(&mut line)
+    })
+    .await;
+    enter_screen()?;
+    // Force a complete repaint. `Terminal::clear` would first ask the terminal for the cursor
+    // position and fail where no answer comes; a fullscreen resize clears the screen and the
+    // previous frame without asking.
+    let area = terminal.size()?.into();
+    terminal.resize(area)?;
+    Ok(installed)
+}
+
 fn installed_package_version(name: &str) -> String {
     Command::new("pacman")
         .args(["-Q", name])
@@ -816,4 +1059,273 @@ fn installed_package_version(name: &str) -> String {
         })
         .filter(|version| !version.is_empty())
         .unwrap_or_else(|| "not installed".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+
+    fn draw(app: &mut App, terminal: &mut Terminal<TestBackend>) {
+        let mut regions = Vec::new();
+        terminal
+            .draw(|frame| regions = ui::draw(frame, app))
+            .unwrap();
+        app.mouse_regions = regions;
+    }
+
+    /// More rows than any of the tested terminals shows, so that every list scrolls.
+    const ROWS: usize = 30;
+
+    #[derive(Clone, Copy, Debug)]
+    enum Rows {
+        Groups,
+        Nodes,
+        Profiles,
+        Connections,
+        Rules,
+    }
+    const LISTS: [Rows; 5] = [
+        Rows::Groups,
+        Rows::Nodes,
+        Rows::Profiles,
+        Rows::Connections,
+        Rows::Rules,
+    ];
+
+    impl Rows {
+        fn label(self, index: usize) -> String {
+            match self {
+                Rows::Groups => format!("grp{index:02}"),
+                Rows::Nodes => format!("nd{index:02}"),
+                Rows::Profiles => format!("prf{index:02}"),
+                Rows::Connections => format!("host{index:02}.test"),
+                Rows::Rules => format!("rule{index:02}.test"),
+            }
+        }
+
+        fn index(self, target: ui::HitTarget) -> Option<usize> {
+            match (self, target) {
+                (Rows::Groups, ui::HitTarget::ProxyGroup(index))
+                | (Rows::Nodes, ui::HitTarget::ProxyNode(index))
+                | (Rows::Profiles, ui::HitTarget::Profile(index))
+                | (Rows::Connections, ui::HitTarget::Connection(index))
+                | (Rows::Rules, ui::HitTarget::Rule(index)) => Some(index),
+                _ => None,
+            }
+        }
+
+        fn select(self, app: &mut App, index: usize) {
+            match self {
+                Rows::Groups => {
+                    app.tab = Tab::Proxies;
+                    app.node_focus = false;
+                    app.group_index = index;
+                }
+                Rows::Nodes => {
+                    app.tab = Tab::Proxies;
+                    app.node_focus = true;
+                    app.node_index = index;
+                }
+                Rows::Profiles => {
+                    app.tab = Tab::Profiles;
+                    app.profile_index = index;
+                }
+                Rows::Connections => {
+                    app.tab = Tab::Connections;
+                    app.connection_index = index;
+                }
+                Rows::Rules => {
+                    app.tab = Tab::Rules;
+                    app.rule_index = index;
+                }
+            }
+        }
+    }
+
+    /// An App whose lists all hold `ROWS` rows, built without reading or writing any file.
+    fn app_with_rows() -> App {
+        let profiles = Profiles {
+            items: (0..ROWS)
+                .map(|index| crate::profiles::Profile {
+                    uid: format!("u{index}"),
+                    name: Rows::Profiles.label(index),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut app = App::from_parts(
+            Config::default(),
+            profiles,
+            Vec::new(),
+            Theme::default(),
+            SupervisorState::default(),
+            String::new(),
+        )
+        .unwrap();
+        let nodes: Vec<_> = (0..ROWS).map(|index| Rows::Nodes.label(index)).collect();
+        let groups: serde_json::Map<_, _> = (0..ROWS)
+            .map(|index| {
+                (
+                    Rows::Groups.label(index),
+                    serde_json::json!({"type": "Selector", "now": nodes[0], "all": nodes}),
+                )
+            })
+            .collect();
+        app.snapshot.proxies =
+            serde_json::from_value(serde_json::json!({ "proxies": groups })).unwrap();
+        app.snapshot.connections = serde_json::from_value(serde_json::json!({
+            "connections": (0..ROWS)
+                .map(|index| serde_json::json!({
+                    "id": format!("c{index}"),
+                    "metadata": {"host": Rows::Connections.label(index)},
+                }))
+                .collect::<Vec<_>>(),
+        }))
+        .unwrap();
+        app.snapshot.rules = serde_json::from_value(serde_json::json!({
+            "rules": (0..ROWS)
+                .map(|index| serde_json::json!({
+                    "type": "DOMAIN", "payload": Rows::Rules.label(index), "proxy": "DIRECT",
+                }))
+                .collect::<Vec<_>>(),
+        }))
+        .unwrap();
+        app
+    }
+
+    fn row_text(terminal: &Terminal<TestBackend>, area: ratatui::layout::Rect) -> String {
+        (area.left()..area.right())
+            .map(|x| terminal.backend().buffer()[(x, area.y)].symbol().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn every_list_region_covers_its_rendered_row() {
+        for (width, height) in [(80, 24), (140, 24), (140, 40)] {
+            for list in LISTS {
+                let mut app = app_with_rows();
+                list.select(&mut app, ROWS - 1);
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                draw(&mut app, &mut terminal);
+                let regions: Vec<_> = app
+                    .mouse_regions
+                    .iter()
+                    .filter_map(|region| {
+                        list.index(region.target).map(|index| (index, region.area))
+                    })
+                    .collect();
+                assert!(
+                    regions.iter().any(|(index, _)| *index == ROWS - 1),
+                    "{width}x{height} {list:?}: the selected row has no region"
+                );
+                for (index, area) in regions {
+                    let shown = row_text(&terminal, area);
+                    assert!(
+                        shown.contains(&list.label(index)),
+                        "{width}x{height} {list:?}: the region of row {index} covers {shown:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_double_click_stays_on_its_row_in_every_list() {
+        for (width, height) in [(80, 24), (140, 24), (140, 40)] {
+            for list in LISTS {
+                let mut app = app_with_rows();
+                list.select(&mut app, ROWS - 1);
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                draw(&mut app, &mut terminal);
+                // The topmost visible row: not the selected (last) one, since every list scrolls.
+                let (target, area) = app
+                    .mouse_regions
+                    .iter()
+                    .filter(|region| list.index(region.target).is_some())
+                    .min_by_key(|region| region.area.y)
+                    .map(|region| (region.target, region.area))
+                    .unwrap_or_else(|| panic!("{width}x{height} {list:?}: no rows"));
+                assert_ne!(list.index(target), Some(ROWS - 1));
+                assert_eq!(app.click(area.x, area.y), Some((target, false)));
+                app.focus_mouse_target(target);
+                draw(&mut app, &mut terminal);
+                assert_eq!(
+                    app.click(area.x, area.y),
+                    Some((target, true)),
+                    "{width}x{height} {list:?}: the second click left the row it selected"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_double_click_on_the_tun_row_stays_on_it_when_the_list_scrolls() {
+        let mut app = App::from_parts(
+            Config::default(),
+            Profiles::default(),
+            Vec::new(),
+            Theme::default(),
+            SupervisorState::default(),
+            String::new(),
+        )
+        .unwrap();
+        app.tab = Tab::Settings;
+        // 80x24 shows three settings rows: with Refresh interval selected, Mihomo TUN is the second.
+        for (width, height) in [(80, 24), (140, 24), (140, 40)] {
+            app.setting_index = SETTINGS_COUNT - 1;
+            app.offsets.settings.set(0);
+            app.last_click = None;
+            app.input = None;
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            draw(&mut app, &mut terminal);
+            let row = app
+                .mouse_regions
+                .iter()
+                .find(|region| region.target == ui::HitTarget::Setting(5))
+                .unwrap_or_else(|| panic!("{width}x{height}: Mihomo TUN has no region"))
+                .area;
+            let shown: String = (row.left()..row.right())
+                .map(|x| terminal.backend().buffer()[(x, row.y)].symbol().to_owned())
+                .collect();
+            assert!(shown.contains("Mihomo TUN"), "{width}x{height}: {shown:?}");
+            // The first click selects the row (what `activate_mouse_target` does before acting).
+            let first = app.click(row.x, row.y);
+            assert_eq!(first, Some((ui::HitTarget::Setting(5), false)));
+            app.focus_mouse_target(ui::HitTarget::Setting(5));
+            draw(&mut app, &mut terminal);
+            assert_eq!(
+                app.click(row.x, row.y),
+                Some((ui::HitTarget::Setting(5), true)),
+                "{width}x{height}: the second click left the Mihomo TUN row"
+            );
+            // The same two clicks through `handle_mouse` open the installation dialog. Only now,
+            // with both clicks shown to land on Mihomo TUN, is anything dispatched: a click on
+            // another setting would save the real config.toml. The fixture keeps the switch
+            // from looking at this machine's helper.
+            app.setting_index = SETTINGS_COUNT - 1;
+            app.offsets.settings.set(0);
+            app.last_click = None;
+            app.input = None;
+            app.tun_fixture = Some((true, toggle::Helper::Missing));
+            let press = MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: row.x,
+                row: row.y,
+                modifiers: KeyModifiers::NONE,
+            };
+            draw(&mut app, &mut terminal);
+            app.handle_mouse(press).await;
+            assert!(app.input.is_none(), "{width}x{height}: one click acted");
+            draw(&mut app, &mut terminal);
+            app.handle_mouse(press).await;
+            assert!(
+                matches!(app.input, Some(InputMode::InstallTunHelper(Setup::Install))),
+                "{width}x{height}: the double-click did not offer to install the helper: {:?}",
+                app.input
+            );
+            assert!(!app.config.tun_enabled, "the dialog alone turned TUN on");
+        }
+    }
 }

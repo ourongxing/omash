@@ -27,6 +27,15 @@ pub struct RuntimeConfig {
     #[serde(rename = "allow-lan")]
     pub allow_lan: Option<bool>,
     pub ipv6: Option<bool>,
+    pub tun: Option<TunRuntime>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct TunRuntime {
+    #[serde(default)]
+    pub enable: bool,
+    #[serde(default)]
+    pub device: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -290,28 +299,6 @@ impl MihomoClient {
     pub async fn set_mode(&self, mode: &str) -> Result<()> {
         self.empty(Method::PATCH, &["configs"], Some(json!({ "mode": mode })))
             .await
-    }
-
-    pub async fn reload_config(&self, path: &std::path::Path) -> Result<()> {
-        let mut url = self.url(&["configs"])?;
-        url.query_pairs_mut().append_pair("force", "true");
-        let mut request = self.client.put(url);
-        if !self.secret.is_empty() {
-            request = request.bearer_auth(&self.secret);
-        }
-        let response = request
-            .json(&json!({ "path": path }))
-            .send()
-            .await
-            .context("cannot ask Mihomo to reload configuration")?;
-        let status = response.status();
-        if !status.is_success() {
-            bail!(
-                "Mihomo returned {status} while reloading configuration: {}",
-                response.text().await.unwrap_or_default()
-            );
-        }
-        Ok(())
     }
 
     pub async fn close_connection(&self, id: Option<&str>) -> Result<()> {

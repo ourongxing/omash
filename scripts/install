@@ -58,7 +58,11 @@ install -Dm644 "$source_root/systemd/omash-supervisor.service" "$service_path"
 sed -i 's|^ExecStart=.*|ExecStart=%h/.local/bin/omash --daemon|' "$service_path"
 
 systemctl --user daemon-reload
-systemctl --user try-restart omash-supervisor.service
+if [[ -f /etc/omash-tun.json ]] && ! "$binary_path" tun status --check-helper >/dev/null 2>&1; then
+  echo "Installed the new client, but the current TUN helper could not confirm compatibility. Run omash tun setup to update it; setup then restarts the supervisor." >&2
+else
+  systemctl --user try-restart omash-supervisor.service
+fi
 
 echo "Installed omash $install_tag to $binary_path."
 if [[ :$PATH: == *":$HOME/.local/bin:"* ]]; then

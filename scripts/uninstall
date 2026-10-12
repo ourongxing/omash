@@ -8,6 +8,18 @@ user_binary="$HOME/.local/bin/omash"
 user_service="$systemd_user_dir/$service_name"
 plugin_path="$HOME/.config/omarchy/plugins/ourongxing.omash"
 
+# Remove the optional system helper before removing the executable that owns its installer.
+if [[ -e /etc/omash-tun.json ]]; then
+  if [[ -x $user_binary ]]; then
+    "$user_binary" tun uninstall
+  elif command -v omash >/dev/null 2>&1; then
+    omash tun uninstall
+  else
+    echo "TUN helper is installed. Restore the omash executable and run omash tun uninstall first." >&2
+    exit 1
+  fi
+fi
+
 if command -v systemctl >/dev/null 2>&1; then
   systemctl --user disable --now "$service_name" >/dev/null 2>&1 || true
 fi

@@ -135,54 +135,45 @@ fn hit_regions(app: &App, shell: ShellAreas) -> Vec<HitRegion> {
                 target: HitTarget::CoreToggle,
             });
         }
+        // The offsets are the ones the lists were just drawn with.
         Tab::Proxies => {
             let columns = proxy_columns(shell.content);
-            regions.extend(list_regions(
-                columns[0],
+            regions.extend(row_regions(
+                list_rows(columns[0], 0),
                 app.proxy_groups().len(),
-                app.group_index,
-                false,
+                app.offsets.groups.get(),
                 HitTarget::ProxyGroup,
             ));
-            regions.extend(list_regions(
-                columns[1],
+            regions.extend(row_regions(
+                list_rows(columns[1], 0),
                 app.selected_group().map_or(0, |(_, group)| group.all.len()),
-                app.node_index,
-                false,
+                app.offsets.nodes.get(),
                 HitTarget::ProxyNode,
             ));
         }
-        Tab::Profiles => regions.extend(list_regions(
-            shell.content,
+        Tab::Profiles => regions.extend(row_regions(
+            list_rows(shell.content, TABLE_HEADER),
             app.profiles.items.len(),
-            app.profile_index,
-            true,
+            app.offsets.profiles.get(),
             HitTarget::Profile,
         )),
-        Tab::Connections => regions.extend(list_regions(
-            shell.content,
+        Tab::Connections => regions.extend(row_regions(
+            list_rows(shell.content, TABLE_HEADER),
             app.snapshot.connections.connections.len(),
-            app.connection_index,
-            true,
+            app.offsets.connections.get(),
             HitTarget::Connection,
         )),
-        Tab::Rules => regions.extend(list_regions(
-            shell.content,
+        Tab::Rules => regions.extend(row_regions(
+            list_rows(shell.content, TABLE_HEADER),
             app.snapshot.rules.rules.len(),
-            app.rule_index,
-            true,
+            app.offsets.rules.get(),
             HitTarget::Rule,
         )),
-        Tab::Settings => {
-            let [settings, _] = settings_areas(shell.content);
-            regions.extend(list_regions(
-                settings,
-                crate::app::SETTINGS_COUNT,
-                app.setting_index,
-                false,
-                HitTarget::Setting,
-            ));
-        }
+        Tab::Settings => regions.extend(settings_regions(
+            shell.content,
+            app.tun_notice.as_deref(),
+            app.offsets.settings.get(),
+        )),
         _ => {}
     }
     regions
@@ -227,39 +218,84 @@ fn tab_regions(area: Rect, wide: bool) -> Vec<HitRegion> {
     }
 }
 
-fn list_regions(
-    area: Rect,
+/// The first visible row of each scrolling list, kept by `draw` between frames: a list scrolls
+/// only to keep its selected row visible, so the first click of a double-click, which selects the
+/// clicked row, does not move that row away from the second click.
+#[derive(Debug, Default)]
+pub struct ListOffsets {
+    pub groups: std::cell::Cell<usize>,
+    pub nodes: std::cell::Cell<usize>,
+    pub profiles: std::cell::Cell<usize>,
+    pub connections: std::cell::Cell<usize>,
+    pub rules: std::cell::Cell<usize>,
+    pub settings: std::cell::Cell<usize>,
+}
+
+/// A table's header row and the margin below it.
+const TABLE_HEADER: u16 = 2;
+
+/// The rows of a list drawn in `panel` or `focus_panel` over `area`, below `header` rows of its
+/// own: the panel's padding takes a column on each side and its title (which has no border to sit
+/// on) and padding take two rows above, its bottom padding one below.
+fn list_rows(area: Rect, header: u16) -> Rect {
+    Rect::new(
+        area.x.saturating_add(PANEL_COLUMNS / 2),
+        area.y.saturating_add(PANEL_TOP + header),
+        area.width.saturating_sub(PANEL_COLUMNS),
+        area.height.saturating_sub(PANEL_ROWS + header),
+    )
+}
+
+/// The offset to draw a list with, kept for the next frame.
+fn scroll(offset: &std::cell::Cell<usize>, selected: usize, len: usize, rows: Rect) -> usize {
+    let kept = keep_offset(offset.get(), selected, len, usize::from(rows.height));
+    offset.set(kept);
+    kept
+}
+
+/// The Settings list, from the first visible row `offset` that `settings` drew.
+fn settings_regions(content: Rect, notice: Option<&str>, offset: usize) -> Vec<HitRegion> {
+    let [settings, _] = settings_areas(content, notice);
+    row_regions(
+        list_rows(settings, 0),
+        crate::app::SETTINGS_COUNT,
+        offset,
+        HitTarget::Setting,
+    )
+}
+
+fn row_regions(
+    rows: Rect,
     len: usize,
-    selected: usize,
-    has_header: bool,
+    start: usize,
     target: fn(usize) -> HitTarget,
 ) -> Vec<HitRegion> {
-    let inner = area.inner(Margin::new(1, 1));
-    let header_height = if has_header { 2 } else { 0 };
-    let capacity = inner.height.saturating_sub(header_height) as usize;
-    if capacity == 0 || len == 0 {
+    let capacity = usize::from(rows.height);
+    if capacity == 0 || start >= len {
         return Vec::new();
     }
-    let start = visible_start(selected, len, capacity);
     let visible = (len - start).min(capacity);
     (0..visible)
         .map(|offset| HitRegion {
-            area: Rect::new(
-                inner.x,
-                inner.y + header_height + offset as u16,
-                inner.width,
-                1,
-            ),
+            area: Rect::new(rows.x, rows.y + offset as u16, rows.width, 1),
             target: target(start + offset),
         })
         .collect()
 }
 
-fn visible_start(selected: usize, len: usize, capacity: usize) -> usize {
-    if len <= capacity || selected < capacity {
-        0
+/// The first visible row after `previous`: kept while the selected row stays visible.
+fn keep_offset(previous: usize, selected: usize, len: usize, capacity: usize) -> usize {
+    if capacity == 0 || len <= capacity {
+        return 0;
+    }
+    let last = len - capacity;
+    let offset = previous.min(last);
+    if selected < offset {
+        selected
+    } else if selected >= offset + capacity {
+        (selected + 1 - capacity).min(last)
     } else {
-        selected.saturating_add(1).saturating_sub(capacity)
+        offset
     }
 }
 
@@ -736,7 +772,15 @@ fn profiles(frame: &mut Frame, app: &App, area: Rect) {
     .row_highlight_style(selection_style(true, &app.theme))
     .highlight_symbol("▎ ")
     .block(panel(" Profiles ", &app.theme));
-    let mut state = TableState::default().with_selected(Some(app.profile_index));
+    let offset = scroll(
+        &app.offsets.profiles,
+        app.profile_index,
+        app.profiles.items.len(),
+        list_rows(area, TABLE_HEADER),
+    );
+    let mut state = TableState::default()
+        .with_offset(offset)
+        .with_selected(Some(app.profile_index));
     frame.render_stateful_widget(table, area, &mut state);
 }
 
@@ -835,7 +879,15 @@ fn proxies(frame: &mut Frame, app: &App, area: Rect) {
             ]))
         })
         .collect();
-    let mut group_state = ListState::default().with_selected(Some(app.group_index));
+    let group_offset = scroll(
+        &app.offsets.groups,
+        app.group_index,
+        groups.len(),
+        list_rows(columns[0], 0),
+    );
+    let mut group_state = ListState::default()
+        .with_offset(group_offset)
+        .with_selected(Some(app.group_index));
     let group_focused = !app.node_focus;
     frame.render_stateful_widget(
         List::new(group_items)
@@ -882,7 +934,15 @@ fn proxies(frame: &mut Frame, app: &App, area: Rect) {
                 .collect()
         })
         .unwrap_or_default();
-    let mut node_state = ListState::default().with_selected(Some(app.node_index));
+    let node_offset = scroll(
+        &app.offsets.nodes,
+        app.node_index,
+        nodes.len(),
+        list_rows(columns[1], 0),
+    );
+    let mut node_state = ListState::default()
+        .with_offset(node_offset)
+        .with_selected(Some(app.node_index));
     let node_focused = app.node_focus;
     let node_title = match app.selected_group() {
         Some((_, group)) if !group.kind.eq_ignore_ascii_case("selector") => " Nodes · automatic ",
@@ -992,7 +1052,15 @@ fn connections(frame: &mut Frame, app: &App, area: Rect) {
         .row_highlight_style(selection_style(true, &app.theme))
         .highlight_symbol("▎ ")
         .block(panel(" Active connections ", &app.theme));
-    let mut state = TableState::default().with_selected(Some(app.connection_index));
+    let offset = scroll(
+        &app.offsets.connections,
+        app.connection_index,
+        app.snapshot.connections.connections.len(),
+        list_rows(area, TABLE_HEADER),
+    );
+    let mut state = TableState::default()
+        .with_offset(offset)
+        .with_selected(Some(app.connection_index));
     frame.render_stateful_widget(table, area, &mut state);
 }
 
@@ -1024,7 +1092,15 @@ fn rules(frame: &mut Frame, app: &App, area: Rect) {
     .row_highlight_style(selection_style(true, &app.theme))
     .highlight_symbol("▎ ")
     .block(panel(" Rules ", &app.theme));
-    let mut state = TableState::default().with_selected(Some(app.rule_index));
+    let offset = scroll(
+        &app.offsets.rules,
+        app.rule_index,
+        app.snapshot.rules.rules.len(),
+        list_rows(area, TABLE_HEADER),
+    );
+    let mut state = TableState::default()
+        .with_offset(offset)
+        .with_selected(Some(app.rule_index));
     frame.render_stateful_widget(table, area, &mut state);
 }
 
@@ -1041,7 +1117,7 @@ fn logs(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn settings(frame: &mut Frame, app: &App, area: Rect) {
-    let [settings_area, updates_area] = settings_areas(area);
+    let [settings_area, updates_area] = settings_areas(area, app.tun_notice.as_deref());
     let values = [
         (
             "Keep core running",
@@ -1051,6 +1127,14 @@ fn settings(frame: &mut Frame, app: &App, area: Rect) {
         ("System proxy", on_off(app.config.system_proxy)),
         ("Allow LAN", on_off(app.config.allow_lan)),
         ("IPv6", on_off(app.config.ipv6)),
+        (
+            "Mihomo TUN",
+            format!(
+                "{} / {}",
+                on_off(app.config.tun_enabled),
+                app.supervisor.tun_state
+            ),
+        ),
         ("Refresh interval", format!("{} ms", app.config.refresh_ms)),
     ];
     let items: Vec<_> = values
@@ -1062,7 +1146,15 @@ fn settings(frame: &mut Frame, app: &App, area: Rect) {
             ]))
         })
         .collect();
-    let mut state = ListState::default().with_selected(Some(app.setting_index));
+    let offset = scroll(
+        &app.offsets.settings,
+        app.setting_index,
+        crate::app::SETTINGS_COUNT,
+        list_rows(settings_area, 0),
+    );
+    let mut state = ListState::default()
+        .with_offset(offset)
+        .with_selected(Some(app.setting_index));
     frame.render_stateful_widget(
         List::new(items)
             .highlight_symbol("▎ ")
@@ -1071,6 +1163,11 @@ fn settings(frame: &mut Frame, app: &App, area: Rect) {
         settings_area,
         &mut state,
     );
+    // A notice of the last Mihomo TUN action takes the place of the static Updates panel.
+    if let Some(notice) = &app.tun_notice {
+        frame.render_widget(tun_notice(notice, &app.theme), updates_area);
+        return;
+    }
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
@@ -1105,9 +1202,53 @@ fn settings(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn settings_areas(area: Rect) -> [Rect; 2] {
-    let areas = Layout::vertical([Constraint::Min(5), Constraint::Length(5)]).split(area);
+/// The settings list and, below it, the Updates panel or a TUN notice in its place. The notice gets
+/// the rows its wrapped text needs, at least the Updates panel's five, and leaves the list its
+/// minimum of five.
+fn settings_areas(area: Rect, notice: Option<&str>) -> [Rect; 2] {
+    const LIST_MIN: u16 = 5;
+    const BOTTOM_MIN: u16 = 5;
+    let bottom = notice.map_or(BOTTOM_MIN, |text| {
+        let rows = wrapped_rows(text, area.width.saturating_sub(PANEL_COLUMNS), area.height)
+            .saturating_add(PANEL_ROWS);
+        rows.clamp(
+            BOTTOM_MIN,
+            area.height.saturating_sub(LIST_MIN).max(BOTTOM_MIN),
+        )
+    });
+    let areas =
+        Layout::vertical([Constraint::Min(LIST_MIN), Constraint::Length(bottom)]).split(area);
     [areas[0], areas[1]]
+}
+
+/// What `panel` takes around its text: a column of padding on each side, and the title row, a
+/// padding row and a bottom padding row (a title without a top border takes a row of its own).
+const PANEL_COLUMNS: u16 = 2;
+const PANEL_ROWS: u16 = 3;
+const PANEL_TOP: u16 = 2;
+
+/// The rows, up to `limit`, that `tun_notice` needs for `text` at `width` columns, measured by
+/// rendering it the same way: explicit line breaks, whole words moved to the next row and words
+/// wider than a row broken.
+fn wrapped_rows(text: &str, width: u16, limit: u16) -> u16 {
+    let area = Rect::new(0, 0, width.max(1), limit.max(1));
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    ratatui::widgets::Widget::render(
+        Paragraph::new(text).wrap(Wrap { trim: true }),
+        area,
+        &mut buffer,
+    );
+    (0..area.height)
+        .rev()
+        .find(|&y| (0..area.width).any(|x| !buffer[(x, y)].symbol().trim().is_empty()))
+        .map_or(1, |y| y + 1)
+}
+
+fn tun_notice<'a>(notice: &'a str, theme: &'a Theme) -> Paragraph<'a> {
+    Paragraph::new(notice)
+        .wrap(Wrap { trim: true })
+        .style(Style::default().fg(theme.foreground))
+        .block(panel(" Mihomo TUN ", theme))
 }
 
 fn help(frame: &mut Frame, app: &App, area: Rect) {
@@ -1198,6 +1339,39 @@ fn help_binding(key: &'static str, description: &'static str, theme: &Theme) -> 
 fn draw_input(frame: &mut Frame, app: &App) {
     match app.input.as_ref() {
         Some(crate::app::InputMode::ImportProfile) => draw_import_input(frame, app),
+        Some(crate::app::InputMode::InstallTunHelper(setup)) => {
+            let (title, action) = match setup {
+                crate::tun::toggle::Setup::Install => {
+                    (" Install TUN helper · y Yes · n/Esc Cancel ", "install")
+                }
+                crate::tun::toggle::Setup::Update => {
+                    (" Update TUN helper · y Yes · n/Esc Cancel ", "update")
+                }
+            };
+            let area = centered(76, 10, frame.area());
+            frame.render_widget(Clear, area);
+            frame.render_widget(
+                Paragraph::new(format!(
+                    "Mihomo TUN needs a system helper. To {action} it, omash leaves this screen and runs sudo in this terminal, which asks for your administrator password. Afterwards omash returns and turns TUN on."
+                ))
+                .wrap(Wrap { trim: true })
+                .style(Style::default().fg(app.theme.foreground))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(app.theme.warning))
+                        .style(Style::default().bg(app.theme.surface))
+                        .padding(Padding::new(2, 2, 1, 1))
+                        .title(Span::styled(
+                            title,
+                            Style::default()
+                                .fg(app.theme.warning)
+                                .add_modifier(Modifier::BOLD),
+                        )),
+                ),
+                area,
+            );
+        }
         Some(crate::app::InputMode::RestoreBackup(path)) => {
             let area = centered(76, 7, frame.area());
             frame.render_widget(Clear, area);
@@ -1528,10 +1702,19 @@ mod tests {
     }
 
     #[test]
-    fn keeps_selected_row_visible() {
-        assert_eq!(visible_start(0, 20, 5), 0);
-        assert_eq!(visible_start(4, 20, 5), 0);
-        assert_eq!(visible_start(7, 20, 5), 3);
+    fn the_offset_moves_only_to_keep_the_selection_visible() {
+        // Seven rows, three visible.
+        assert_eq!(keep_offset(4, 5, 7, 3), 4);
+        assert_eq!(keep_offset(4, 3, 7, 3), 3);
+        assert_eq!(keep_offset(0, 6, 7, 3), 4);
+        assert_eq!(keep_offset(6, 6, 7, 3), 4);
+        assert_eq!(keep_offset(3, 0, 7, 3), 0);
+        // A list that shrank, and a selection past its end, still fill the view.
+        assert_eq!(keep_offset(4, 4, 5, 3), 2);
+        assert_eq!(keep_offset(0, 9, 7, 3), 4);
+        // Everything fits: no scrolling at all.
+        assert_eq!(keep_offset(4, 6, 7, 7), 0);
+        assert_eq!(keep_offset(4, 6, 7, 0), 0);
     }
 
     #[test]
@@ -1539,6 +1722,149 @@ mod tests {
         assert_eq!(fit_column("Group", 7, false), "Group  ");
         assert_eq!(fit_column("Node", 7, true), "   Node");
         assert_eq!(fit_column("节点选择", 6, false), "节点… ");
+    }
+
+    /// The text of `area` in `buffer`, row by row, without whitespace.
+    fn area_text(buffer: &ratatui::buffer::Buffer, area: Rect) -> String {
+        let mut text = String::new();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+        }
+        text.split_whitespace().collect()
+    }
+
+    #[test]
+    fn a_long_tun_notice_is_shown_in_full() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let notice = format!(
+            "{} {}",
+            crate::tun::toggle::setup_failed("TUN setup failed (exit status: 1)"),
+            "Then check `omash tun doctor` for the cause."
+        );
+        assert!(notice.len() >= 160);
+        let theme = Theme::default();
+        // Wide layouts (with and without the sidebar's status) and the narrow one.
+        for (width, height) in [(140, 24), (140, 40), (80, 24)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let content = shell_areas(Rect::new(0, 0, width, height)).content;
+            let [list, bottom] = settings_areas(content, Some(&notice));
+            assert!(
+                list.height >= 5,
+                "{width}x{height}: the settings list lost its rows"
+            );
+            terminal
+                .draw(|frame| frame.render_widget(tun_notice(&notice, &theme), bottom))
+                .unwrap();
+            let shown = area_text(terminal.backend().buffer(), bottom);
+            let wanted: String = notice.split_whitespace().collect();
+            assert!(
+                shown.contains(&wanted),
+                "{width}x{height}: the notice was cut: {shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn panel_overhead_matches_the_block() {
+        let outer = Rect::new(3, 4, 40, 10);
+        let theme = Theme::default();
+        let inner = panel(" Mihomo TUN ", &theme).inner(outer);
+        assert_eq!(outer.width - inner.width, PANEL_COLUMNS);
+        assert_eq!(outer.height - inner.height, PANEL_ROWS);
+        for focused in [true, false] {
+            assert_eq!(
+                list_rows(outer, 0),
+                panel(" Settings ", &theme).inner(outer)
+            );
+            assert_eq!(
+                list_rows(outer, 0),
+                focus_panel(" Nodes ", focused, &theme).inner(outer)
+            );
+        }
+    }
+
+    #[test]
+    fn wrapped_rows_moves_whole_words_and_breaks_long_ones() {
+        assert_eq!(wrapped_rows("", 10, 10), 1);
+        assert_eq!(wrapped_rows("aaaa bbbb", 9, 10), 1);
+        assert_eq!(wrapped_rows("aaaa bbbb", 8, 10), 2);
+        assert_eq!(wrapped_rows("aaaa bbbb cc", 9, 10), 2);
+        assert_eq!(wrapped_rows("abcdefghijkl", 5, 10), 3);
+        assert_eq!(wrapped_rows("ab abcdefghij", 5, 10), 3);
+        // Explicit line breaks, as in an error that quotes a command's output.
+        assert_eq!(wrapped_rows("first\nsecond\nthird", 40, 10), 3);
+        assert_eq!(wrapped_rows("first\n\nthird", 40, 10), 3);
+        assert_eq!(wrapped_rows("a\nb\nc\nd", 40, 2), 2);
+    }
+
+    #[test]
+    fn a_multiline_tun_notice_gets_a_row_per_line() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let notice = "TUN request failed: nft failed:\nError: first line\nError: second line\nError: third line";
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(140, 40)).unwrap();
+        let content = shell_areas(Rect::new(0, 0, 140, 40)).content;
+        let [_, bottom] = settings_areas(content, Some(notice));
+        terminal
+            .draw(|frame| frame.render_widget(tun_notice(notice, &theme), bottom))
+            .unwrap();
+        let shown = area_text(terminal.backend().buffer(), bottom);
+        let wanted: String = notice.split_whitespace().collect();
+        assert!(shown.contains(&wanted), "the notice was cut: {shown}");
+    }
+
+    #[test]
+    fn settings_hit_regions_match_the_rendered_rows() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::default();
+        let notice = crate::tun::toggle::declined(crate::tun::toggle::Setup::Install);
+        for (width, height) in [(140, 40), (140, 24), (80, 24)] {
+            for notice in [None, Some(notice)] {
+                // The Mihomo TUN row, also where the list has to scroll to show it.
+                let selected = 5;
+                let content = shell_areas(Rect::new(0, 0, width, height)).content;
+                let [settings, _] = settings_areas(content, notice);
+                let capacity = usize::from(panel(" Settings ", &theme).inner(settings).height);
+                let offset = keep_offset(0, selected, crate::app::SETTINGS_COUNT, capacity);
+                let items: Vec<_> = (0..crate::app::SETTINGS_COUNT)
+                    .map(|index| ListItem::new(format!("item{index}")))
+                    .collect();
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        let mut state = ListState::default()
+                            .with_offset(offset)
+                            .with_selected(Some(selected));
+                        frame.render_stateful_widget(
+                            List::new(items)
+                                .highlight_symbol("▎ ")
+                                .block(panel(" Settings ", &theme)),
+                            settings,
+                            &mut state,
+                        );
+                    })
+                    .unwrap();
+                let regions = settings_regions(content, notice, offset);
+                assert!(
+                    regions
+                        .iter()
+                        .any(|region| region.target == HitTarget::Setting(selected)),
+                    "{width}x{height}: the selected row has no region"
+                );
+                for region in regions {
+                    let HitTarget::Setting(index) = region.target else {
+                        unreachable!()
+                    };
+                    let row = area_text(terminal.backend().buffer(), region.area);
+                    assert!(
+                        row.contains(&format!("item{index}")),
+                        "{width}x{height} {notice:?}: region of item{index} covers {row:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

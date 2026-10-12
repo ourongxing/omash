@@ -8,30 +8,45 @@ mod omarchy;
 mod profiles;
 mod statusbar;
 mod theme;
+mod tun;
 mod ui;
 
 use anyhow::Result;
-use app::App;
+use app::{App, restore_terminal, setup_terminal};
 use clap::Parser;
 use config::{Cli, Command, Config};
-use crossterm::{
-    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
-use ratatui::{Terminal, backend::CrosstermBackend};
-use std::io::{self, stdout};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.config.is_some() && matches!(cli.command, Some(Command::Tun { .. })) {
+        anyhow::bail!(
+            "managed TUN uses the supervisor's default configuration; use XDG_CONFIG_HOME consistently instead of --config"
+        );
+    }
+    // Privileged/internal entry points must never load or create root's desktop configuration.
+    match &cli.command {
+        Some(Command::InternalTunService) => return tun::service::run().await,
+        Some(Command::InternalTunInstall {
+            uid,
+            gid,
+            data_dir,
+            digest,
+        }) => return tun::install::root_install(*uid, *gid, data_dir, digest),
+        Some(Command::InternalTunUninstall { uid }) => return tun::install::root_uninstall(*uid),
+        Some(Command::Tun {
+            command: config::TunCommand::Setup,
+        }) => return tun::install::setup().await,
+        _ => {}
+    }
     let config = Config::load(&cli)?;
     match &cli.command {
         Some(Command::Bar(args)) => return statusbar::run(&config, &args.command).await,
         Some(Command::Stop) => return core::cli_stop().await,
         Some(Command::Start) => return core::cli_start().await,
         Some(Command::Restart) => return core::cli_restart().await,
-        None => {}
+        Some(Command::Tun { command }) => return tun::cli::run(config, command).await,
+        _ => {}
     }
     core::ensure_system_core()?;
     if cli.daemon {
@@ -43,27 +58,4 @@ async fn main() -> Result<()> {
     let result = app.run(&mut terminal).await;
     restore_terminal(&mut terminal)?;
     result
-}
-
-fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
-    enable_raw_mode()?;
-    execute!(
-        stdout(),
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        EnableBracketedPaste
-    )?;
-    Ok(Terminal::new(CrosstermBackend::new(stdout()))?)
-}
-
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        DisableMouseCapture,
-        DisableBracketedPaste,
-        LeaveAlternateScreen
-    )?;
-    terminal.show_cursor()?;
-    Ok(())
 }

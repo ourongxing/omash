@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --check
+
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+      - run: cargo test --locked
+
+      # The namespace-based TUN check needs root on a disposable VM and is not run here.
+      - run: python3 scripts/check-tun-traffic.py self-test
+
+      - name: Check script syntax
+        run: |
+          for script in scripts/*.py; do python3 -m py_compile "$script"; done
+          for script in scripts/check-tun-linux scripts/install scripts/uninstall scripts/dry-run scripts/release; do bash -n "$script"; done

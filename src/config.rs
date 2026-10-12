@@ -43,6 +43,41 @@ pub enum Command {
     Start,
     /// Restart the proxy core
     Restart,
+    /// Manage the optional Linux Mihomo TUN service
+    Tun {
+        #[command(subcommand)]
+        command: TunCommand,
+    },
+    #[command(hide = true)]
+    InternalTunService,
+    #[command(hide = true)]
+    InternalTunInstall {
+        uid: u32,
+        gid: u32,
+        data_dir: PathBuf,
+        digest: String,
+    },
+    #[command(hide = true)]
+    InternalTunUninstall { uid: u32 },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TunCommand {
+    /// Enable TUN and wait for the requested revision
+    On,
+    /// Disable TUN and wait for the requested revision
+    Off,
+    /// Show desired and actual TUN state (without credentials)
+    Status {
+        #[arg(long, hide = true)]
+        check_helper: bool,
+    },
+    /// Install or update the optional system helper (requires authorization)
+    Setup,
+    /// Inspect TUN permissions, runtime state and routes
+    Doctor,
+    /// Stop and remove the optional helper, preserving user data
+    Uninstall,
 }
 
 #[derive(Debug, Args)]
@@ -92,6 +127,7 @@ pub struct Config {
     pub allow_lan: bool,
     pub ipv6: bool,
     pub system_proxy: bool,
+    pub tun_enabled: bool,
     pub proxy_bypass: String,
 }
 
@@ -107,6 +143,7 @@ impl Default for Config {
             allow_lan: false,
             ipv6: true,
             system_proxy: true,
+            tun_enabled: false,
             proxy_bypass: "localhost,127.0.0.1,::1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12".into(),
         }
     }
@@ -158,6 +195,14 @@ impl Config {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("omash/config.toml")
+    }
+
+    /// `tun_enabled` as config.toml holds it now, if the file can be read.
+    pub fn saved_tun_enabled() -> Option<bool> {
+        let text = fs::read_to_string(Self::default_path()).ok()?;
+        toml::from_str::<Self>(&text)
+            .ok()
+            .map(|saved| saved.tun_enabled)
     }
 
     pub fn data_dir() -> PathBuf {
@@ -234,7 +279,7 @@ impl Config {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, toml::to_string_pretty(self)?)
+        crate::tun::process::private_write(path, toml::to_string_pretty(self)?.as_bytes())
             .with_context(|| format!("failed to write {}", path.display()))?;
         Self::secure_config_permissions(path)?;
         Ok(())
@@ -244,7 +289,10 @@ impl Config {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+            // Even a no-op chmod bumps the ctime, and the supervisor loads this every second.
+            if fs::metadata(path)?.permissions().mode() & 0o7777 != 0o600 {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+            }
         }
         Ok(())
     }
@@ -314,6 +362,33 @@ mod tests {
         assert!(config.system_proxy);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn config_permissions_are_changed_only_when_needed() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "secret = 'key'\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        Config::secure_config_permissions(&path).unwrap();
+        let mode = |path: &PathBuf| fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode(&path), 0o600);
+        // A chmod bumps the ctime even when the mode is unchanged.
+        let ctime = |path: &PathBuf| {
+            let meta = fs::metadata(path).unwrap();
+            (meta.ctime(), meta.ctime_nsec())
+        };
+        let before = ctime(&path);
+        std::thread::sleep(Duration::from_millis(30));
+        Config::secure_config_permissions(&path).unwrap();
+        assert_eq!(ctime(&path), before);
+        // Stray special bits are still removed, and a missing file is still an error.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o1600)).unwrap();
+        Config::secure_config_permissions(&path).unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert!(Config::secure_config_permissions(&dir.path().join("missing.toml")).is_err());
+    }
+
     #[test]
     fn removes_legacy_external_core_fields() {
         let dir = tempfile::tempdir().unwrap();
@@ -323,7 +398,7 @@ mod tests {
             "manage_core = false\nmihomo_path = '/tmp/mihomo'\ntun = true\nsecret = 'key'\n",
         )
         .unwrap();
-        Config::load(&Cli {
+        let config = Config::load(&Cli {
             command: None,
             daemon: false,
             refresh_ms: None,
@@ -333,7 +408,8 @@ mod tests {
         let migrated = fs::read_to_string(path).unwrap();
         assert!(!migrated.contains("manage_core"));
         assert!(!migrated.contains("mihomo_path"));
-        assert!(!migrated.contains("tun"));
+        assert!(!migrated.lines().any(|line| line.starts_with("tun =")));
+        assert!(!config.tun_enabled);
     }
 
     #[test]

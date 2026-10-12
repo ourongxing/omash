@@ -8,7 +8,8 @@ arch=('x86_64')
 url='https://github.com/ourongxing/omash'
 license=('GPL-3.0-only')
 depends=('mihomo' 'clash-geoip')
-optdepends=('sing-box: sing-box core support')
+optdepends=('sing-box: sing-box core support'
+            'nftables: TUN mode')
 makedepends=('cargo')
 options=('!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")

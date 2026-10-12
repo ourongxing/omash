@@ -1,0 +1,47 @@
+# Installed by `omash tun setup`; placeholders are filled with verified numeric IDs and paths.
+[Unit]
+Description=Omash TUN helper
+After=network.target
+
+[Service]
+Type=simple
+User=@UID@
+Group=@GID@
+ExecStart=/usr/local/libexec/omash-tun-service internal-tun-service
+WorkingDirectory=@DATA@
+Environment=PATH=/usr/bin:/bin
+RuntimeDirectory=omash-tun
+RuntimeDirectoryMode=0700
+UMask=0077
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@DATA@
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+PrivateIPC=yes
+DevicePolicy=closed
+DeviceAllow=/dev/net/tun rw
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+KillMode=mixed
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

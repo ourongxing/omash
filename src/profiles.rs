@@ -322,9 +322,7 @@ impl Profiles {
                     ("proxy-groups", item.groups.as_ref()),
                 ]
                 .into_iter()
-                .filter_map(|(key, file)| {
-                    file.map(|file| (key, Config::profiles_dir().join(file)))
-                })
+                .filter_map(|(key, file)| file.map(|file| (key, Config::profiles_dir().join(file))))
                 .collect();
                 let chains: Vec<_> = owned_chains
                     .iter()
@@ -339,6 +337,7 @@ impl Profiles {
                     config.allow_lan,
                     config.ipv6,
                 );
+                crate::tun::config::apply(&mut runtime, config.tun_enabled, config.ipv6)?;
                 atomic_write(destination, serde_yaml_ng::to_string(&runtime)?.as_bytes())?;
             }
             CoreKind::Singbox => {
@@ -353,13 +352,12 @@ impl Profiles {
                     config.mixed_port,
                     config.allow_lan,
                 )?;
-                atomic_write(destination, serde_json::to_string_pretty(&runtime)?.as_bytes())?;
+                atomic_write(
+                    destination,
+                    serde_json::to_string_pretty(&runtime)?.as_bytes(),
+                )?;
             }
         }
-        let _ = fs::remove_file(Config::runtime_path_for(match item.core {
-            CoreKind::Mihomo => CoreKind::Singbox,
-            CoreKind::Singbox => CoreKind::Mihomo,
-        }));
         Ok(destination.to_path_buf())
     }
 }
@@ -447,13 +445,7 @@ fn parse_subscription_info(value: &str) -> Option<SubscriptionInfo> {
 }
 
 fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let temporary = path.with_extension("tmp");
-    fs::write(&temporary, content)?;
-    fs::rename(&temporary, path)?;
-    Ok(())
+    crate::tun::process::private_write(path, content)
 }
 
 #[cfg(test)]

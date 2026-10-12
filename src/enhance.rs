@@ -52,7 +52,6 @@ pub fn apply_runtime_defaults(
     set(config, "mixed-port", mixed_port);
     set(config, "allow-lan", allow_lan);
     set(config, "ipv6", ipv6);
-    config.remove("tun");
     let profile = config
         .entry(Value::String("profile".into()))
         .or_insert_with(|| Value::Mapping(Mapping::new()));
@@ -107,7 +106,9 @@ pub fn apply_singbox_defaults(
     let inbounds = root
         .entry("inbounds".to_owned())
         .or_insert_with(|| serde_json::json!([]));
-    let inbounds = inbounds.as_array_mut().context("inbounds must be an array")?;
+    let inbounds = inbounds
+        .as_array_mut()
+        .context("inbounds must be an array")?;
     let port_taken = inbounds.iter().any(|inbound| {
         inbound
             .get("listen_port")
@@ -134,7 +135,9 @@ pub fn apply_singbox_defaults(
     let outbound_tag = |wanted: &str| {
         outbounds
             .iter()
-            .find(|outbound| outbound.get("type").and_then(serde_json::Value::as_str) == Some(wanted))
+            .find(|outbound| {
+                outbound.get("type").and_then(serde_json::Value::as_str) == Some(wanted)
+            })
             .and_then(|outbound| outbound.get("tag"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
@@ -157,9 +160,9 @@ pub fn apply_singbox_defaults(
                 outbound.get("tag").and_then(serde_json::Value::as_str) == Some("direct")
             })
             .or_else(|| {
-                outbounds
-                    .iter()
-                    .find(|outbound| outbound.get("type").and_then(serde_json::Value::as_str) == Some("direct"))
+                outbounds.iter().find(|outbound| {
+                    outbound.get("type").and_then(serde_json::Value::as_str) == Some("direct")
+                })
             })
             .and_then(|outbound| outbound.get("tag"))
             .and_then(serde_json::Value::as_str)
@@ -264,23 +267,27 @@ mod tests {
             true,
         );
         assert_eq!(config["profile"]["store-selected"], Value::Bool(true));
-        assert!(!config.contains_key("tun"));
+        assert!(config.contains_key("tun"));
     }
 
     #[test]
     fn singbox_defaults_inject_clash_api_and_mixed_inbound() {
         let mut config: serde_json::Value =
             serde_json::from_str(r#"{"outbounds":[{"type":"direct","tag":"direct"}]}"#).unwrap();
-        apply_singbox_defaults(&mut config, "http://127.0.0.1:9090", "topsecret", 7897, false).unwrap();
+        apply_singbox_defaults(
+            &mut config,
+            "http://127.0.0.1:9090",
+            "topsecret",
+            7897,
+            false,
+        )
+        .unwrap();
         assert_eq!(
             config["experimental"]["clash_api"]["external_controller"],
             "127.0.0.1:9090"
         );
         assert_eq!(config["experimental"]["clash_api"]["secret"], "topsecret");
-        assert_eq!(
-            config["experimental"]["clash_api"]["default_mode"],
-            "rule"
-        );
+        assert_eq!(config["experimental"]["clash_api"]["default_mode"], "rule");
         assert_eq!(config["experimental"]["cache_file"]["enabled"], true);
         let inbound = &config["inbounds"][0];
         assert_eq!(inbound["type"], "mixed");
@@ -308,7 +315,10 @@ mod tests {
         )
         .unwrap();
         apply_singbox_defaults(&mut config, "127.0.0.1:9090", "s", 7897, false).unwrap();
-        assert_eq!(config["experimental"]["clash_api"]["default_mode"], "global");
+        assert_eq!(
+            config["experimental"]["clash_api"]["default_mode"],
+            "global"
+        );
     }
 
     #[test]
