@@ -327,7 +327,10 @@ Panel {
               Rectangle {
                 id: groupPane
                 width: Math.floor((groupBrowser.width - groupBrowser.spacing) * 0.42)
-                height: groupList.implicitHeight + Style.space(6)
+                height: Math.max(
+                  groupList.implicitHeight + Style.space(6),
+                  Math.min(proxyList.implicitHeight, Style.space(300))
+                )
                 color: Style.normalFillFor(root.contentForeground, Color.accent)
                 radius: Style.cornerRadius
 
