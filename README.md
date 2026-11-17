@@ -196,6 +196,32 @@ the dashboard, mode switching, delay tests, and the system proxy keep working
 the same way. Clash-style merge and prepend/append enhancement chains only
 apply to Mihomo profiles.
 
+#### TUN permissions
+
+sing-box profiles with a `tun` inbound need permission to create the TUN
+interface and manage routes. Grant capabilities to the system binary:
+
+```bash
+sudo setcap cap_net_admin,cap_net_bind_service=+ep /usr/bin/sing-box
+getcap /usr/bin/sing-box
+```
+
+The verification command should print:
+
+```text
+/usr/bin/sing-box cap_net_bind_service,cap_net_admin=ep
+```
+
+Then restart the core with `omash restart`. A profile can pass import validation
+but fail to start without these permissions; the core log will report
+`TUNSETIFF: operation not permitted`. Logs are under
+`~/.local/share/omash/logs/`.
+
+Updating or reinstalling the sing-box package may clear these capabilities.
+Check them again and reapply the command if needed. If you only need an HTTP
+or SOCKS proxy, remove the `tun` inbound from your profile and use a mixed
+inbound instead.
+
 ### Theme override
 
 The TUI follows the current Omarchy palette by default. To override it:
